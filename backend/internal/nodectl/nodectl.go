@@ -185,7 +185,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (json.RawMessage, error) 
 		if err != nil {
 			return nil, err
 		}
-		defer os.Remove(path) // the script deletes it after reading; this covers failures
+		defer func() { _ = os.Remove(path) }() // the script deletes it after reading; this covers failures
 		args = []string{"apply", path}
 	case "remove":
 		if !channelRe.MatchString(req.Channel) {
@@ -195,7 +195,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (json.RawMessage, error) 
 		if err != nil {
 			return nil, err
 		}
-		defer os.Remove(path)
+		defer func() { _ = os.Remove(path) }()
 		args = []string{"remove", path}
 	case "status":
 		if !channelRe.MatchString(req.Channel) {
