@@ -1,0 +1,96 @@
+name: ios
+
+# Builds the unsigned AIHub.ipa for Sideloadly on a free macOS runner
+# (public repository), and runs the AIHubKit tests on the simulator.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["ios/**", "third_party/**", ".gitmodules", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          [ -n "$xcode" ] || xcode=/Applications/Xcode.app
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          echo "XCODE_PATH=$xcode" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: third_party/openflux/mobile/go.mod
+          cache-dependency-path: third_party/openflux/mobile/go.sum
+
+      - name: Build liboflux (OpenFlux core)
+        run: |
+          bash third_party/openflux/build_ios.sh
+          cp third_party/openflux/output/ios/liboflux.a third_party/openflux/output/ios/liboflux.h ios/Lib/
+          ls -lh ios/Lib
+
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Test AIHubKit (simulator)
+        working-directory: ios
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)['devices']
+          ids=[x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')]
+          print(ids[0] if ids else '')")
+          echo "simulator: $udid"
+          xcodebuild test -project AIHub.xcodeproj -scheme AIHubKit -destination "platform=iOS Simulator,id=$udid" \
+            CODE_SIGNING_ALLOWED=NO | tail -n 60
+          exit ${PIPESTATUS[0]}
+
+      - name: Build AIHub (device, unsigned)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project AIHub.xcodeproj -scheme AIHub -sdk iphoneos -configuration Release \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
+            | grep -E "error:|warning: .*(Sendable|isolat)|BUILD (SUCCEEDED|FAILED)|\*\*" | head -n 200
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          app=build/Build/Products/Release-iphoneos/AIHub.app
+          [ -d "$app" ] || { echo "AIHub.app missing"; exit 1; }
+          rm -rf Payload && mkdir Payload && cp -R "$app" Payload/
+          zip -qry AIHub.ipa Payload
+          ls -lh AIHub.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIHub-ipa
+          path: ios/AIHub.ipa
+          retention-days: 30
+
+      - name: Attach to the GitHub release (tags v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "AIHub ${GITHUB_REF_NAME#v}" --notes "Unsigned IPA for Sideloadly (docs/sideloadly.ru.md)."
+          gh release upload "$GITHUB_REF_NAME" ios/AIHub.ipa --clobber

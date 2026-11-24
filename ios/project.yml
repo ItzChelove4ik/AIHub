@@ -1,0 +1,104 @@
+# XcodeGen spec: xcodegen generate (CI does it; the .xcodeproj is not committed).
+# No paid capabilities: no Network Extension, App Groups or Push, so the app
+# installs with a free Apple ID through Sideloadly.
+name: AIHub
+options:
+  bundleIdPrefix: com.itzchelove4ik
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: ru
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+
+targets:
+  # Logic without the OpenFlux core: models, API client, SSE, Keychain.
+  # Its tests run on the simulator.
+  AIHubKit:
+    type: framework
+    platform: iOS
+    sources:
+      - path: AIHubKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itzchelove4ik.aihub.kit
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+
+  AIHub:
+    type: application
+    platform: iOS
+    sources:
+      - path: AIHub
+      - path: Lib
+        buildPhase: none
+    dependencies:
+      - target: AIHubKit
+      - framework: Lib/liboflux.a
+        embed: false
+      - sdk: Security.framework
+      - sdk: CoreFoundation.framework
+      - sdk: WebKit.framework
+      - sdk: AVFoundation.framework
+    info:
+      path: AIHub/Info.plist
+      properties:
+        CFBundleDisplayName: AIHub
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: "Камера нужна, чтобы сканировать QR-код канала и снимать фото для чата."
+        NSPhotoLibraryUsageDescription: "Доступ к фото нужен, чтобы прикреплять изображения к сообщениям."
+        CFBundleLocalizations: [ru, en]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itzchelove4ik.aihub
+        PRODUCT_NAME: AIHub
+        SWIFT_OBJC_BRIDGING_HEADER: AIHub/AIHub-Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Lib"]
+        LIBRARY_SEARCH_PATHS: ["$(SRCROOT)/Lib"]
+        OTHER_LDFLAGS: ["-lresolv"]
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        # The core is built for device arm64 only.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: "x86_64 arm64"
+
+  AIHubKitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AIHubKitTests
+    dependencies:
+      - target: AIHubKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itzchelove4ik.aihub.kittests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  AIHub:
+    build:
+      targets:
+        AIHub: all
+  AIHubKit:
+    build:
+      targets:
+        AIHubKit: all
+        AIHubKitTests: [test]
+    test:
+      targets:
+        - AIHubKitTests
