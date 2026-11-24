@@ -174,7 +174,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*store.User, 
 		if inviteChannel, err = s.invites.CheckInvite(ctx, code); err != nil {
 			return nil, nil, ErrInvalidInvite
 		}
-	} else if s.registration == "invite" && !isAdmin && !(first && s.adminEmail == "") {
+	} else if s.registration == "invite" && !isAdmin && (!first || s.adminEmail != "") {
 		// Invite-only: besides invitees, only the admin may register (the
 		// ADMIN_EMAIL account, or without it the very first account).
 		return nil, nil, ErrInviteRequired

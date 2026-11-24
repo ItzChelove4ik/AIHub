@@ -120,7 +120,7 @@ func parseContent(raw json.RawMessage) (string, []providers.Attachment, error) {
 func parseDataURL(u string) (providers.Attachment, error) {
 	rest, ok := strings.CutPrefix(u, "data:")
 	if !ok {
-		return providers.Attachment{}, errors.New("изображения принимаются только как data:image/...;base64,...")
+		return providers.Attachment{}, errors.New("изображения принимаются только как data URL (data:image/png;base64,<данные>)")
 	}
 	meta, data, ok := strings.Cut(rest, ",")
 	mediaType, isB64 := strings.CutSuffix(meta, ";base64")

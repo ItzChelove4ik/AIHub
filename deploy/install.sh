@@ -78,7 +78,9 @@ esac
 # ---- packages and Docker ---------------------------------------------------
 
 # Read os-release in a subshell: it defines VERSION, ID and more.
+# shellcheck source=/dev/null
 OS_ID=$(. /etc/os-release 2>/dev/null && echo "${ID:-}")
+# shellcheck source=/dev/null
 OS_CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-}")
 if ! have curl || ! have openssl || ! have sha256sum; then
     have apt-get || die "install curl, openssl and coreutils first"
