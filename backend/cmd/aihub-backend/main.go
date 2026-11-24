@@ -106,8 +106,9 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		Addr:              cfg.Listen,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		// Generous: a photo through a document carrier uploads slowly.
+		ReadTimeout: 10 * time.Minute,
+		IdleTimeout: 120 * time.Second,
 		// No WriteTimeout: chat answers stream for minutes. Streams end
 		// when the client disconnects or the provider finishes.
 		MaxHeaderBytes: 64 << 10,

@@ -381,6 +381,18 @@ paths:
       summary: Delete
       responses:
         "204": { description: Deleted }
+  /v1/attachments/{id}:
+    get:
+      tags: [chat]
+      summary: An image of one of the user's conversations
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "200":
+          description: Image bytes
+          content:
+            image/*:
+              schema: { type: string, format: binary }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/usage:
     get:
       tags: [chat]
@@ -483,7 +495,7 @@ paths:
   /v1/tunnel/channels/{id}:
     delete:
       tags: [tunnel]
-      summary: Remove a channel (own; admin: any)
+      summary: "Remove a channel (own; admin: any)"
       parameters: [{ $ref: "#/components/parameters/ID" }]
       responses:
         "204": { description: Removed }
@@ -678,7 +690,9 @@ paths:
       security: [{ aihubKey: [] }]
       summary: OpenAI Chat Completions on the key owner's providers (scope `chat`)
       description: |
-        `model` is `provider/model`. Text content only (string or text parts);
+        `model` is `provider/model`. Content is a string or `text` / `image_url` parts;
+        images only as `data:image/...;base64,` URLs (remote URLs are refused, the server
+        does not fetch them);
         `system`/`developer` messages become the system prompt. `stream: true` returns
         OpenAI chunks and `data: [DONE]`; `stream_options.include_usage` adds the
         usage chunk. Counts against the owner's limits.
@@ -810,16 +824,33 @@ components:
       required: [role, content]
       properties:
         role: { type: string, enum: [user, assistant] }
-        content: { type: string }
+        content: { type: string, description: May be empty when the message has images }
         attachments:
           type: array
-          description: Images (planned; rejected for now)
-          items:
-            type: object
-            properties:
-              type: { type: string, const: image }
-              media_type: { type: string }
-              data: { type: string, contentEncoding: base64 }
+          maxItems: 10
+          description: |
+            Images, user messages only. Each at most 5 MB decoded, at most 20 images and
+            18 MB per request. The content must match `media_type`. Images are stored with
+            the conversation and sent again as context on later turns. A model whose
+            catalog entry says `vision: false` gets a 400; `vision: null` is tried.
+            The client should downscale photos (e.g. JPEG, longest side 2048 px) — the
+            tunnel carriers are slow.
+          items: { $ref: "#/components/schemas/AttachmentInput" }
+    AttachmentInput:
+      type: object
+      required: [type, media_type, data]
+      properties:
+        type: { type: string, const: image }
+        media_type: { type: string, enum: [image/jpeg, image/png, image/webp, image/gif] }
+        data: { type: string, contentEncoding: base64, description: Standard base64 }
+    AttachmentInfo:
+      type: object
+      properties:
+        id: { type: integer }
+        type: { type: string, const: image }
+        media_type: { type: string }
+        size: { type: integer }
+        url: { type: string, example: /v1/attachments/12, description: Fetch with the access token }
     ChatRequest:
       type: object
       required: [provider, model, messages]
@@ -849,6 +880,9 @@ components:
         id: { type: integer }
         role: { type: string }
         content: { type: string }
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/AttachmentInfo" }
         provider: { type: string }
         model: { type: string }
         input_tokens: { type: integer }

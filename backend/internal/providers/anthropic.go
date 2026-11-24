@@ -94,8 +94,22 @@ func (a *Anthropic) ListModels(ctx context.Context, c Credential) ([]Model, erro
 }
 
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string           `json:"role"`
+	Content []map[string]any `json:"content"`
+}
+
+// anthropicBlocks is a message as content blocks: images first (as the
+// Messages API docs recommend), then the text.
+func anthropicBlocks(m Message) []map[string]any {
+	blocks := make([]map[string]any, 0, len(m.Attachments)+1)
+	for _, a := range m.Attachments {
+		blocks = append(blocks, map[string]any{"type": "image",
+			"source": map[string]string{"type": "base64", "media_type": a.MediaType, "data": a.Data}})
+	}
+	if m.Content != "" || len(blocks) == 0 {
+		blocks = append(blocks, map[string]any{"type": "text", "text": m.Content})
+	}
+	return blocks
 }
 
 // anthropicMessages merges consecutive messages of the same role (the API
@@ -111,17 +125,17 @@ func anthropicMessages(in []Message) []anthropicMessage {
 			continue
 		}
 		if n := len(out); n > 0 && out[n-1].Role == role {
-			out[n-1].Content += "\n\n" + m.Content
+			out[n-1].Content = append(out[n-1].Content, anthropicBlocks(m)...)
 			continue
 		}
-		out = append(out, anthropicMessage{Role: role, Content: m.Content})
+		out = append(out, anthropicMessage{Role: role, Content: anthropicBlocks(m)})
 	}
 	return out
 }
 
 func (a *Anthropic) StreamChat(ctx context.Context, c Credential, r ChatRequest, onDelta func(string) error) (Usage, error) {
 	var usage Usage
-	if err := checkNoAttachments(r.Messages); err != nil {
+	if err := checkAttachments(r.Messages); err != nil {
 		return usage, err
 	}
 	maxTokens := r.MaxTokens

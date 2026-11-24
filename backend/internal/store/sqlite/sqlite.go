@@ -514,6 +514,56 @@ func (s *DB) ListMessages(ctx context.Context, conversationID int64) ([]store.Me
 	return out, rows.Err()
 }
 
+// --- attachments ---
+
+func (s *DB) AddAttachment(ctx context.Context, a *store.Attachment) error {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO attachments(message_id, type, media_type, size, data, created_at) VALUES(?,?,?,?,?,?)`,
+		a.MessageID, a.Type, a.MediaType, len(a.Data), a.Data, ms(a.CreatedAt))
+	if err != nil {
+		return err
+	}
+	a.Size = len(a.Data)
+	a.ID, err = res.LastInsertId()
+	return err
+}
+
+func (s *DB) ConversationAttachments(ctx context.Context, conversationID int64, withData bool) ([]store.Attachment, error) {
+	data := "NULL"
+	if withData {
+		data = "a.data"
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.message_id, a.type, a.media_type, a.size, `+data+`, a.created_at
+		FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.conversation_id = ? ORDER BY a.message_id, a.id`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []store.Attachment
+	for rows.Next() {
+		var a store.Attachment
+		var created int64
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.Type, &a.MediaType, &a.Size, &a.Data, &created); err != nil {
+			return nil, err
+		}
+		a.CreatedAt = fromMS(created)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *DB) AttachmentForUser(ctx context.Context, userID, id int64) (*store.Attachment, error) {
+	var a store.Attachment
+	var created int64
+	err := s.db.QueryRowContext(ctx, `SELECT a.id, a.message_id, a.type, a.media_type, a.size, a.data, a.created_at
+		FROM attachments a JOIN messages m ON m.id = a.message_id JOIN conversations c ON c.id = m.conversation_id
+		WHERE a.id = ? AND c.user_id = ?`, id, userID).Scan(&a.ID, &a.MessageID, &a.Type, &a.MediaType, &a.Size, &a.Data, &created)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	a.CreatedAt = fromMS(created)
+	return &a, nil
+}
+
 // --- usage and limits ---
 
 func (s *DB) AddUsage(ctx context.Context, userID int64, provider, day string, requests, in, out int64) error {

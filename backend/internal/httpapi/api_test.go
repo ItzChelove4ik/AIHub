@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,10 @@ import (
 
 const providerKey = "sk-fake-provider-key-9876"
 
+const pngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+var lastProviderBody atomic.Value
+
 // fakeOpenAI is an OpenAI-compatible provider that answers "Hello world".
 func fakeOpenAI(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,10 +43,8 @@ func fakeOpenAI(t *testing.T) *httptest.Server {
 		case "/v1/models":
 			io.WriteString(w, `{"data":[{"id":"fake-model"}]}`)
 		case "/v1/chat/completions":
-			var body struct {
-				Stream bool `json:"stream"`
-			}
-			json.NewDecoder(r.Body).Decode(&body)
+			raw, _ := io.ReadAll(r.Body)
+			lastProviderBody.Store(string(raw))
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, part := range []string{"Hello", " world"} {
 				io.WriteString(w, `data: {"choices":[{"delta":{"content":"`+part+`"}}]}`+"\n\n")
@@ -345,4 +348,87 @@ func waitFor(t *testing.T, cond func() bool) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestImagesInChat(t *testing.T) {
+	h := newHarness(t)
+	prov := fakeOpenAI(t)
+	var reg struct {
+		Tokens auth.Tokens `json:"tokens"`
+	}
+	h.json("POST", "/v1/auth/register", "", map[string]string{"email": "img@example.com", "password": "a-long-password-1", "device_id": "d"}, 201, &reg)
+	tok := reg.Tokens.AccessToken
+	h.json("POST", "/v1/connections", tok, map[string]string{"provider": "custom", "api_key": providerKey, "label": "Lab",
+		"base_url": prov.URL + "/v1"}, 201, nil)
+
+	img := map[string]string{"type": "image", "media_type": "image/png", "data": pngB64}
+	resp, raw := h.do("POST", "/v1/chat", tok, map[string]any{"provider": "custom-lab", "model": "fake-model",
+		"messages": []map[string]any{{"role": "user", "content": "", "attachments": []any{img}}}})
+	if resp.StatusCode != 200 || !strings.Contains(string(raw), "event: done") {
+		t.Fatalf("chat with image: %d %s", resp.StatusCode, raw)
+	}
+	if body, _ := lastProviderBody.Load().(string); !strings.Contains(body, "data:image/png;base64,"+pngB64) {
+		t.Fatalf("image not sent to the provider: %s", body)
+	}
+	var list struct {
+		Conversations []struct {
+			ID    int64  `json:"id"`
+			Title string `json:"title"`
+		} `json:"conversations"`
+	}
+	h.json("GET", "/v1/conversations", tok, nil, 200, &list)
+	convID := list.Conversations[0].ID
+
+	// The image is stored and comes back with the history and on its own.
+	var conv struct {
+		Messages []struct {
+			Attachments []struct {
+				ID        int64  `json:"id"`
+				MediaType string `json:"media_type"`
+				URL       string `json:"url"`
+			} `json:"attachments"`
+		} `json:"messages"`
+	}
+	h.json("GET", "/v1/conversations/"+itoa(convID), tok, nil, 200, &conv)
+	if len(conv.Messages) != 2 || len(conv.Messages[0].Attachments) != 1 || conv.Messages[0].Attachments[0].MediaType != "image/png" {
+		t.Fatalf("history: %+v", conv)
+	}
+	resp, raw = h.do("GET", conv.Messages[0].Attachments[0].URL, tok, nil)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" || !bytes.HasPrefix(raw, []byte("\x89PNG")) {
+		t.Fatalf("attachment: %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	// A follow-up turn sends the earlier image again as context.
+	lastProviderBody.Store("")
+	h.do("POST", "/v1/chat", tok, map[string]any{"conversation_id": convID, "provider": "custom-lab", "model": "fake-model",
+		"messages": []map[string]any{{"role": "user", "content": "and now?"}}})
+	if body, _ := lastProviderBody.Load().(string); !strings.Contains(body, pngB64) || !strings.Contains(body, "and now?") {
+		t.Fatalf("history image missing on the next turn: %s", body)
+	}
+
+	// Another user cannot read it.
+	var reg2 struct {
+		Tokens auth.Tokens `json:"tokens"`
+	}
+	h.json("POST", "/v1/auth/register", "", map[string]string{"email": "other@example.com", "password": "a-long-password-2", "device_id": "d"}, 201, &reg2)
+	h.json("GET", conv.Messages[0].Attachments[0].URL, reg2.Tokens.AccessToken, nil, 404, nil)
+
+	// Bad images are refused before anything is stored.
+	h.json("POST", "/v1/chat", tok, map[string]any{"provider": "custom-lab", "model": "fake-model",
+		"messages": []map[string]any{{"role": "user", "content": "x", "attachments": []any{map[string]string{"type": "image", "media_type": "image/jpeg", "data": pngB64}}}}}, 400, nil)
+
+	// OpenAI-compatible API takes data URLs, not remote URLs.
+	var created struct {
+		Key string `json:"key"`
+	}
+	h.json("POST", "/v1/apikeys", tok, map[string]any{"name": "cli"}, 201, &created)
+	parts := []map[string]any{{"type": "text", "text": "describe"}, {"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64," + pngB64}}}
+	h.json("POST", "/openai/v1/chat/completions", created.Key, map[string]any{"model": "custom-lab/fake-model",
+		"messages": []map[string]any{{"role": "user", "content": parts}}}, 200, nil)
+	if body, _ := lastProviderBody.Load().(string); !strings.Contains(body, pngB64) {
+		t.Fatal("openai-compatible image not forwarded")
+	}
+	remote := []map[string]any{{"type": "image_url", "image_url": map[string]string{"url": "http://169.254.169.254/x.png"}}}
+	h.json("POST", "/openai/v1/chat/completions", created.Key, map[string]any{"model": "custom-lab/fake-model",
+		"messages": []map[string]any{{"role": "user", "content": remote}}}, 400, nil)
 }

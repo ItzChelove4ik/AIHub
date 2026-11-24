@@ -83,6 +83,8 @@ func (s *sseWriter) event(name string, v any) error {
 	return s.rc.Flush()
 }
 
+const maxChatBody = 40 << 20
+
 // chatEmitter adapts chat.Emitter to SSE.
 type chatEmitter struct{ sse *sseWriter }
 
@@ -102,7 +104,9 @@ func (e chatEmitter) Done(conv, msg int64, stopped bool) error {
 // connection cancels the request to the provider.
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	var in chat.Input
-	if !decode(w, r, 8<<20, &in) {
+	// Images total at most 20 MB (27 MB as base64); the iOS client
+	// downsizes photos first.
+	if !decode(w, r, maxChatBody, &in) {
 		return
 	}
 	sse := newSSE(w)
@@ -161,16 +165,25 @@ func toConversationView(c store.Conversation) conversationView {
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
 }
 
+type attachmentView struct {
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Size      int    `json:"size"`
+	URL       string `json:"url"`
+}
+
 type messageView struct {
-	ID           int64     `json:"id"`
-	Role         string    `json:"role"`
-	Content      string    `json:"content"`
-	Provider     string    `json:"provider,omitempty"`
-	Model        string    `json:"model,omitempty"`
-	InputTokens  int64     `json:"input_tokens,omitempty"`
-	OutputTokens int64     `json:"output_tokens,omitempty"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           int64            `json:"id"`
+	Role         string           `json:"role"`
+	Content      string           `json:"content"`
+	Attachments  []attachmentView `json:"attachments,omitempty"`
+	Provider     string           `json:"provider,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	InputTokens  int64            `json:"input_tokens,omitempty"`
+	OutputTokens int64            `json:"output_tokens,omitempty"`
+	Status       string           `json:"status"`
+	CreatedAt    time.Time        `json:"created_at"`
 }
 
 func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) {
@@ -183,10 +196,20 @@ func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	atts, err := s.Chat.Attachments(r.Context(), c.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	byMsg := map[int64][]attachmentView{}
+	for _, a := range atts {
+		byMsg[a.MessageID] = append(byMsg[a.MessageID], attachmentView{ID: a.ID, Type: a.Type, MediaType: a.MediaType,
+			Size: a.Size, URL: "/v1/attachments/" + strconv.FormatInt(a.ID, 10)})
+	}
 	out := make([]messageView, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, messageView{ID: m.ID, Role: m.Role, Content: m.Content, Provider: m.Provider, Model: m.Model,
-			InputTokens: m.InputTokens, OutputTokens: m.OutputTokens, Status: m.Status, CreatedAt: m.CreatedAt})
+		out = append(out, messageView{ID: m.ID, Role: m.Role, Content: m.Content, Attachments: byMsg[m.ID], Provider: m.Provider,
+			Model: m.Model, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens, Status: m.Status, CreatedAt: m.CreatedAt})
 	}
 	writeJSON(w, 200, map[string]any{"conversation": toConversationView(*c), "messages": out})
 }
@@ -220,4 +243,23 @@ func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+// getAttachment returns an image of one of the user's conversations.
+func (s *Server) getAttachment(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	a, err := s.Chat.Attachment(r.Context(), principal(r).UserID, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", a.MediaType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(a.Data)))
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	_, _ = w.Write(a.Data)
 }

@@ -85,7 +85,22 @@ func (a *OpenAI) ListModels(ctx context.Context, c Credential) ([]Model, error) 
 
 type openAIChatMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"` // string, or content parts with images
+}
+
+// openAIContent is plain text, or text and image_url parts (data URLs).
+func openAIContent(m Message) any {
+	if len(m.Attachments) == 0 {
+		return m.Content
+	}
+	parts := make([]map[string]any, 0, len(m.Attachments)+1)
+	if m.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, a := range m.Attachments {
+		parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": dataURL(a)}})
+	}
+	return parts
 }
 
 type openAIStreamChunk struct {
@@ -110,7 +125,7 @@ type openAIStreamChunk struct {
 
 func (a *OpenAI) StreamChat(ctx context.Context, c Credential, r ChatRequest, onDelta func(string) error) (Usage, error) {
 	var usage Usage
-	if err := checkNoAttachments(r.Messages); err != nil {
+	if err := checkAttachments(r.Messages); err != nil {
 		return usage, err
 	}
 	msgs := make([]openAIChatMessage, 0, len(r.Messages)+1)
@@ -118,7 +133,7 @@ func (a *OpenAI) StreamChat(ctx context.Context, c Credential, r ChatRequest, on
 		msgs = append(msgs, openAIChatMessage{Role: "system", Content: r.System})
 	}
 	for _, m := range r.Messages {
-		msgs = append(msgs, openAIChatMessage{Role: m.Role, Content: m.Content})
+		msgs = append(msgs, openAIChatMessage{Role: m.Role, Content: openAIContent(m)})
 	}
 	body := map[string]any{"model": r.Model, "messages": msgs, "stream": true}
 	if r.Temperature != nil {

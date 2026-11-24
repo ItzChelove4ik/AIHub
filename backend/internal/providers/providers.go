@@ -5,6 +5,7 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,13 +79,61 @@ type Model struct {
 	MaxOutput int `json:"-"`
 }
 
-// Attachment is a file sent with a message. Images are planned (phase 5);
-// adapters reject attachments until then.
+// Attachment is a file sent with a message: an image, base64 encoded.
 type Attachment struct {
 	Type      string `json:"type"`       // image
-	MediaType string `json:"media_type"` // image/png, image/jpeg
-	Data      string `json:"data"`       // base64
+	MediaType string `json:"media_type"` // image/jpeg, image/png, image/webp, image/gif
+	Data      string `json:"data"`       // standard base64
 }
+
+// Image limits: what every supported provider accepts inline (Anthropic's
+// 5 MB per image is the tightest).
+const (
+	MaxImageBytes       = 5 << 20
+	MaxImagesPerMsg     = 10
+	MaxImagesPerRequest = 20
+	// MaxImageBytesPerRequest keeps a request under Gemini's 20 MB inline cap.
+	MaxImageBytesPerRequest = 18 << 20
+)
+
+// ImageMediaTypes are the image formats the providers take inline.
+var ImageMediaTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/webp": true, "image/gif": true}
+
+// ValidateAttachment checks one attachment and returns its decoded bytes.
+func ValidateAttachment(a Attachment) ([]byte, error) {
+	if a.Type != "image" {
+		return nil, errors.New("поддерживаются только вложения-изображения")
+	}
+	if !ImageMediaTypes[a.MediaType] {
+		return nil, errors.New("формат изображения: jpeg, png, webp или gif")
+	}
+	if base64.StdEncoding.DecodedLen(len(a.Data)) > MaxImageBytes+3 {
+		return nil, fmt.Errorf("изображение больше %d МБ", MaxImageBytes>>20)
+	}
+	raw, err := base64.StdEncoding.DecodeString(a.Data)
+	if err != nil {
+		return nil, errors.New("изображение должно быть в base64")
+	}
+	if len(raw) == 0 || len(raw) > MaxImageBytes {
+		return nil, fmt.Errorf("изображение пустое или больше %d МБ", MaxImageBytes>>20)
+	}
+	if got := http.DetectContentType(raw); got != a.MediaType {
+		return nil, errors.New("содержимое изображения не совпадает с media_type")
+	}
+	return raw, nil
+}
+
+// HasImages reports whether any message carries an image.
+func HasImages(msgs []Message) bool {
+	for _, m := range msgs {
+		if len(m.Attachments) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func dataURL(a Attachment) string { return "data:" + a.MediaType + ";base64," + a.Data }
 
 type Message struct {
 	Role        string       `json:"role"` // user | assistant
@@ -127,7 +176,7 @@ type Adapter interface {
 	StreamChat(ctx context.Context, c Credential, req ChatRequest, onDelta func(string) error) (Usage, error)
 }
 
-var ErrAttachmentsUnsupported = errors.New("вложения пока не поддерживаются")
+var ErrAttachmentsUnsupported = errors.New("неподдерживаемые или слишком многочисленные вложения")
 
 // Error is an error the provider returned. Message never contains the key.
 type Error struct {
@@ -286,11 +335,23 @@ func truncate(s string) string {
 	return s
 }
 
-func checkNoAttachments(msgs []Message) error {
+// checkAttachments is the adapters' last line of defence; chat and the
+// OpenAI-compatible API validate earlier with friendlier errors.
+func checkAttachments(msgs []Message) error {
+	total := 0
 	for _, m := range msgs {
-		if len(m.Attachments) > 0 {
+		if len(m.Attachments) > MaxImagesPerMsg {
 			return ErrAttachmentsUnsupported
 		}
+		for _, a := range m.Attachments {
+			if a.Type != "image" || !ImageMediaTypes[a.MediaType] || a.Data == "" {
+				return ErrAttachmentsUnsupported
+			}
+			total++
+		}
+	}
+	if total > MaxImagesPerRequest {
+		return ErrAttachmentsUnsupported
 	}
 	return nil
 }

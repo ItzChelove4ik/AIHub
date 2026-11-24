@@ -78,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/conversations/{id}", s.getConversation)
 			r.Patch("/conversations/{id}", s.renameConversation)
 			r.Delete("/conversations/{id}", s.deleteConversation)
+			r.Get("/attachments/{id}", s.getAttachment)
 			r.Get("/usage", s.usage)
 
 			r.Get("/apikeys", s.listAPIKeys)

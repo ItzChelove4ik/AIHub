@@ -5,6 +5,7 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,6 +119,7 @@ func validate(in *Input) error {
 	if len(in.Messages) > 500 {
 		return &ValidationError{"слишком много сообщений"}
 	}
+	images, imageBytes := 0, 0
 	for i := range in.Messages {
 		m := &in.Messages[i]
 		if m.Role != "user" && m.Role != "assistant" {
@@ -126,9 +128,29 @@ func validate(in *Input) error {
 		if len(m.Content) > 1<<20 {
 			return &ValidationError{"сообщение слишком длинное"}
 		}
-		if len(m.Attachments) > 0 {
-			return &ValidationError{providers.ErrAttachmentsUnsupported.Error()}
+		if len(m.Attachments) > 0 && m.Role != "user" {
+			return &ValidationError{"изображения можно прикреплять только к сообщениям user"}
 		}
+		if len(m.Attachments) > providers.MaxImagesPerMsg {
+			return &ValidationError{fmt.Sprintf("не больше %d изображений в сообщении", providers.MaxImagesPerMsg)}
+		}
+		for _, a := range m.Attachments {
+			raw, err := providers.ValidateAttachment(a)
+			if err != nil {
+				return &ValidationError{err.Error()}
+			}
+			images++
+			imageBytes += len(raw)
+		}
+		if strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0 {
+			return &ValidationError{"пустое сообщение"}
+		}
+	}
+	if images > providers.MaxImagesPerRequest {
+		return &ValidationError{fmt.Sprintf("не больше %d изображений за запрос", providers.MaxImagesPerRequest)}
+	}
+	if imageBytes > providers.MaxImageBytesPerRequest {
+		return &ValidationError{fmt.Sprintf("изображения вместе больше %d МБ", providers.MaxImageBytesPerRequest>>20)}
 	}
 	if in.Messages[len(in.Messages)-1].Role != "user" {
 		return &ValidationError{"последнее сообщение должно быть от user"}
@@ -153,9 +175,18 @@ func (s *Service) Run(ctx context.Context, userID int64, in Input, emit Emitter)
 	if err := s.CheckLimits(ctx, userID); err != nil {
 		return err
 	}
-	// Fail before creating anything when the provider is not connected.
-	if _, _, err := s.conn.Resolve(ctx, userID, in.Provider); err != nil {
+	// Fail before creating anything when the provider is not connected,
+	// or when images go to a model the provider says cannot see.
+	_, cred, err := s.conn.Resolve(ctx, userID, in.Provider)
+	if err != nil {
 		return err
+	}
+	vision := true // unknown counts as yes: the provider has the last word
+	if mi := s.conn.ModelInfo(ctx, userID, cred, in.Model); mi != nil && mi.Vision != nil {
+		vision = *mi.Vision
+	}
+	if !vision && providers.HasImages(in.Messages) {
+		return &ValidationError{"модель " + in.Model + " не принимает изображения"}
 	}
 	now := s.now()
 	var conv *store.Conversation
@@ -169,15 +200,8 @@ func (s *Service) Run(ctx context.Context, userID int64, in Input, emit Emitter)
 			return err
 		}
 		conv = c
-		stored, err := s.store.ListMessages(ctx, c.ID)
-		if err != nil {
+		if history, err = s.history(ctx, c.ID, vision); err != nil {
 			return err
-		}
-		for _, m := range stored {
-			if m.Content == "" {
-				continue
-			}
-			history = append(history, providers.Message{Role: m.Role, Content: m.Content})
 		}
 		conv.Provider, conv.Model = in.Provider, in.Model
 		if in.System != nil {
@@ -198,6 +222,13 @@ func (s *Service) Run(ctx context.Context, userID int64, in Input, emit Emitter)
 		sm := &store.Message{ConversationID: conv.ID, Role: m.Role, Content: m.Content, CreatedAt: now}
 		if err := s.store.AddMessage(ctx, sm); err != nil {
 			return err
+		}
+		for _, a := range m.Attachments {
+			raw, _ := providers.ValidateAttachment(a) // validated above
+			if err := s.store.AddAttachment(ctx, &store.Attachment{MessageID: sm.ID, Type: a.Type, MediaType: a.MediaType,
+				Data: raw, CreatedAt: now}); err != nil {
+				return err
+			}
 		}
 		lastUserID = sm.ID
 	}
@@ -251,8 +282,45 @@ func (s *Service) Run(ctx context.Context, userID int64, in Input, emit Emitter)
 	return emit.Done(conv.ID, am.ID, false)
 }
 
+// history is the stored conversation as provider messages, with its
+// images; for a model that cannot see they become a text note.
+func (s *Service) history(ctx context.Context, convID int64, vision bool) ([]providers.Message, error) {
+	stored, err := s.store.ListMessages(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	atts, err := s.store.ConversationAttachments(ctx, convID, vision)
+	if err != nil {
+		return nil, err
+	}
+	byMsg := map[int64][]store.Attachment{}
+	for _, a := range atts {
+		byMsg[a.MessageID] = append(byMsg[a.MessageID], a)
+	}
+	var out []providers.Message
+	for _, m := range stored {
+		pm := providers.Message{Role: m.Role, Content: m.Content}
+		for _, a := range byMsg[m.ID] {
+			if vision {
+				pm.Attachments = append(pm.Attachments, providers.Attachment{Type: a.Type, MediaType: a.MediaType,
+					Data: base64.StdEncoding.EncodeToString(a.Data)})
+			} else {
+				pm.Content = strings.TrimSpace(pm.Content + "\n[изображение]")
+			}
+		}
+		if pm.Content == "" && len(pm.Attachments) == 0 {
+			continue
+		}
+		out = append(out, pm)
+	}
+	return out, nil
+}
+
 func fallbackTitle(msgs []providers.Message) string {
 	for _, m := range msgs {
+		if m.Role == "user" && strings.TrimSpace(m.Content) == "" && len(m.Attachments) > 0 {
+			return "Изображение"
+		}
 		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
 			t := strings.Join(strings.Fields(m.Content), " ")
 			if utf8.RuneCountInString(t) > 60 {
@@ -273,6 +341,9 @@ func (s *Service) generateTitle(userID, convID int64, provider, model string, ms
 	for _, m := range msgs {
 		if m.Role == "user" {
 			first = m.Content
+			if len(m.Attachments) > 0 {
+				first = strings.TrimSpace(first + "\n[пользователь прислал изображение]")
+			}
 			break
 		}
 	}
@@ -312,6 +383,20 @@ func (s *Service) generateTitle(userID, convID int64, provider, model string, ms
 	if err := s.store.UpdateConversation(ctx, c); err != nil {
 		s.log.Warn("save title", "err", err)
 	}
+}
+
+// Attachment returns one of the user's images.
+func (s *Service) Attachment(ctx context.Context, userID, id int64) (*store.Attachment, error) {
+	a, err := s.store.AttachmentForUser(ctx, userID, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, ErrNotFound
+	}
+	return a, err
+}
+
+// Attachments lists a conversation's attachments without their data.
+func (s *Service) Attachments(ctx context.Context, convID int64) ([]store.Attachment, error) {
+	return s.store.ConversationAttachments(ctx, convID, false)
 }
 
 // --- conversations ---

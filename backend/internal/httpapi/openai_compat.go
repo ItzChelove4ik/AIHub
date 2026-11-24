@@ -75,30 +75,63 @@ type oaiRequest struct {
 	} `json:"stream_options"`
 }
 
-// contentText accepts a string or an array of {type:"text"} parts.
-func contentText(raw json.RawMessage) (string, error) {
+// parseContent accepts a string or an array of text and image_url parts.
+// Images must be data: URLs; the server does not fetch remote URLs.
+func parseContent(raw json.RawMessage) (string, []providers.Attachment, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return "", nil
+		return "", nil, nil
 	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return s, nil
+		return s, nil, nil
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", errors.New("content: строка или массив частей")
+		return "", nil, errors.New("content: строка или массив частей")
 	}
 	var b strings.Builder
+	var atts []providers.Attachment
 	for _, p := range parts {
-		if p.Type != "text" {
-			return "", errors.New("поддерживаются только текстовые части сообщений")
+		switch p.Type {
+		case "text":
+			b.WriteString(p.Text)
+		case "image_url":
+			if p.ImageURL == nil {
+				return "", nil, errors.New("image_url без url")
+			}
+			a, err := parseDataURL(p.ImageURL.URL)
+			if err != nil {
+				return "", nil, err
+			}
+			atts = append(atts, a)
+		default:
+			return "", nil, errors.New("поддерживаются части text и image_url")
 		}
-		b.WriteString(p.Text)
 	}
-	return b.String(), nil
+	return b.String(), atts, nil
+}
+
+func parseDataURL(u string) (providers.Attachment, error) {
+	rest, ok := strings.CutPrefix(u, "data:")
+	if !ok {
+		return providers.Attachment{}, errors.New("изображения принимаются только как data:image/...;base64,...")
+	}
+	meta, data, ok := strings.Cut(rest, ",")
+	mediaType, isB64 := strings.CutSuffix(meta, ";base64")
+	if !ok || !isB64 {
+		return providers.Attachment{}, errors.New("data URL изображения должен быть в base64")
+	}
+	a := providers.Attachment{Type: "image", MediaType: mediaType, Data: data}
+	if _, err := providers.ValidateAttachment(a); err != nil {
+		return providers.Attachment{}, err
+	}
+	return a, nil
 }
 
 func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +140,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in oaiRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxChatBody))
 	if err := dec.Decode(&in); err != nil { // unknown fields are allowed here, as OpenAI clients send many
 		openaiError(w, 400, "invalid_request_error", "bad_json", "некорректный JSON")
 		return
@@ -119,21 +152,34 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	var system []string
 	var msgs []providers.Message
+	images, imageBytes := 0, 0
 	for _, m := range in.Messages {
-		text, err := contentText(m.Content)
+		text, atts, err := parseContent(m.Content)
 		if err != nil {
 			openaiError(w, 400, "invalid_request_error", "bad_content", err.Error())
+			return
+		}
+		images += len(atts)
+		for _, a := range atts {
+			imageBytes += len(a.Data) * 3 / 4
+		}
+		if len(atts) > 0 && m.Role != "user" {
+			openaiError(w, 400, "invalid_request_error", "bad_content", "изображения можно прикреплять только к сообщениям user")
 			return
 		}
 		switch m.Role {
 		case "system", "developer":
 			system = append(system, text)
 		case "user", "assistant":
-			msgs = append(msgs, providers.Message{Role: m.Role, Content: text})
+			msgs = append(msgs, providers.Message{Role: m.Role, Content: text, Attachments: atts})
 		default:
 			openaiError(w, 400, "invalid_request_error", "unsupported_role", "роль "+m.Role+" не поддерживается")
 			return
 		}
+	}
+	if images > providers.MaxImagesPerRequest || imageBytes > providers.MaxImageBytesPerRequest {
+		openaiError(w, 400, "invalid_request_error", "too_many_images", "слишком много изображений")
+		return
 	}
 	if len(msgs) == 0 || msgs[len(msgs)-1].Role != "user" {
 		openaiError(w, 400, "invalid_request_error", "bad_messages", "последнее сообщение должно быть от user")
@@ -218,6 +264,8 @@ func (s *Server) openaiFail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, connections.ErrNotConnected), errors.Is(err, connections.ErrUnknownProvider):
 		openaiError(w, 404, "invalid_request_error", "model_not_found", err.Error())
+	case errors.Is(err, providers.ErrAttachmentsUnsupported):
+		openaiError(w, 400, "invalid_request_error", "bad_content", err.Error())
 	case errors.As(err, &pe):
 		status := 502
 		if pe.Status >= 400 && pe.Status < 500 {

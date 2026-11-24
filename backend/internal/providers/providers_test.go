@@ -159,7 +159,8 @@ func TestAnthropicStreamAndModels(t *testing.T) {
 		t.Fatalf("text %q usage %+v", text, u)
 	}
 	msgs := body["messages"].([]any)
-	if len(msgs) != 1 || msgs[0].(map[string]any)["content"] != "a\n\nb" || body["system"] != "sys" || body["max_tokens"] == nil {
+	blocks := msgs[0].(map[string]any)["content"].([]any)
+	if len(msgs) != 1 || len(blocks) != 2 || blocks[1].(map[string]any)["text"] != "b" || body["system"] != "sys" || body["max_tokens"] == nil {
 		t.Fatalf("request body: %v", body)
 	}
 }
@@ -206,10 +207,88 @@ func TestGeminiStreamAndModels(t *testing.T) {
 	}
 }
 
-func TestAttachmentsRejected(t *testing.T) {
+// A 1x1 PNG.
+const pngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+func imageRequest() ChatRequest {
+	return ChatRequest{Model: "m", Messages: []Message{{Role: "user", Content: "what is this?",
+		Attachments: []Attachment{{Type: "image", MediaType: "image/png", Data: pngB64}}}}}
+}
+
+func TestOpenAIImage(t *testing.T) {
+	var body map[string]any
+	srv := fakeProvider(t, "Authorization", "Bearer "+testKey, map[string]string{"/chat/completions": "openai_stream.sse"}, &body)
+	spec := Specs["openai"]
+	spec.BaseURL = srv.URL
+	if _, _, err := collect(t, &OpenAI{c: NewClients(true)}, Credential{Spec: spec, Key: testKey}, imageRequest()); err != nil {
+		t.Fatal(err)
+	}
+	parts := body["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	img := parts[1].(map[string]any)
+	if parts[0].(map[string]any)["text"] != "what is this?" || img["type"] != "image_url" ||
+		img["image_url"].(map[string]any)["url"] != "data:image/png;base64,"+pngB64 {
+		t.Fatalf("parts: %v", parts)
+	}
+}
+
+func TestAnthropicImage(t *testing.T) {
+	var body map[string]any
+	srv := fakeProvider(t, "x-api-key", testKey, map[string]string{"/messages": "anthropic_stream.sse"}, &body)
+	spec := Specs["anthropic"]
+	spec.BaseURL = srv.URL
+	if _, _, err := collect(t, &Anthropic{c: NewClients(true)}, Credential{Spec: spec, Key: testKey}, imageRequest()); err != nil {
+		t.Fatal(err)
+	}
+	blocks := body["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	img := blocks[0].(map[string]any)
+	src := img["source"].(map[string]any)
+	if img["type"] != "image" || src["type"] != "base64" || src["media_type"] != "image/png" || src["data"] != pngB64 ||
+		blocks[1].(map[string]any)["text"] != "what is this?" {
+		t.Fatalf("blocks: %v", blocks)
+	}
+}
+
+func TestGeminiImage(t *testing.T) {
+	var body map[string]any
+	srv := fakeProvider(t, "x-goog-api-key", testKey, map[string]string{"/models/m:streamGenerateContent": "gemini_stream.sse"}, &body)
+	spec := Specs["gemini"]
+	spec.BaseURL = srv.URL
+	if _, _, err := collect(t, &Gemini{c: NewClients(true)}, Credential{Spec: spec, Key: testKey}, imageRequest()); err != nil {
+		t.Fatal(err)
+	}
+	parts := body["contents"].([]any)[0].(map[string]any)["parts"].([]any)
+	inline := parts[0].(map[string]any)["inlineData"].(map[string]any)
+	if inline["mimeType"] != "image/png" || inline["data"] != pngB64 || parts[1].(map[string]any)["text"] != "what is this?" {
+		t.Fatalf("parts: %v", parts)
+	}
+}
+
+func TestValidateAttachment(t *testing.T) {
+	if raw, err := ValidateAttachment(Attachment{Type: "image", MediaType: "image/png", Data: pngB64}); err != nil || len(raw) == 0 {
+		t.Fatalf("valid png: %v", err)
+	}
+	bad := []Attachment{
+		{Type: "file", MediaType: "image/png", Data: pngB64},
+		{Type: "image", MediaType: "image/svg+xml", Data: pngB64},
+		{Type: "image", MediaType: "image/jpeg", Data: pngB64}, // says jpeg, is png
+		{Type: "image", MediaType: "image/png", Data: "%%%"},
+		{Type: "image", MediaType: "image/png", Data: ""},
+	}
+	for i, a := range bad {
+		if _, err := ValidateAttachment(a); err == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+	big := strings.Repeat("A", (MaxImageBytes/3+10)*4)
+	if _, err := ValidateAttachment(Attachment{Type: "image", MediaType: "image/png", Data: big}); err == nil {
+		t.Error("oversized image accepted")
+	}
+}
+
+func TestAttachmentsRejectedByAdapters(t *testing.T) {
 	for _, a := range []Adapter{&OpenAI{}, &Anthropic{}, &Gemini{}} {
 		_, err := a.StreamChat(context.Background(), Credential{Spec: Specs["openai"]}, ChatRequest{
-			Messages: []Message{{Role: "user", Content: "x", Attachments: []Attachment{{Type: "image"}}}}}, func(string) error { return nil })
+			Messages: []Message{{Role: "user", Content: "x", Attachments: []Attachment{{Type: "pdf"}}}}}, func(string) error { return nil })
 		if !errors.Is(err, ErrAttachmentsUnsupported) {
 			t.Fatalf("%T: %v", a, err)
 		}

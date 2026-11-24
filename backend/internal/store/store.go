@@ -88,6 +88,17 @@ type Message struct {
 	CreatedAt      time.Time
 }
 
+// Attachment is an image of a message.
+type Attachment struct {
+	ID        int64
+	MessageID int64
+	Type      string
+	MediaType string
+	Size      int
+	Data      []byte // nil in listings that only need the metadata
+	CreatedAt time.Time
+}
+
 type UsageRow struct {
 	UserID       int64
 	Provider     string
@@ -191,6 +202,13 @@ type Store interface {
 	DeleteConversation(ctx context.Context, userID, id int64) error
 	AddMessage(ctx context.Context, m *Message) error
 	ListMessages(ctx context.Context, conversationID int64) ([]Message, error)
+	AddAttachment(ctx context.Context, a *Attachment) error
+	// ConversationAttachments returns the conversation's attachments in
+	// message order, with their data when withData is set.
+	ConversationAttachments(ctx context.Context, conversationID int64, withData bool) ([]Attachment, error)
+	// AttachmentForUser returns an attachment of one of the user's
+	// conversations, with its data.
+	AttachmentForUser(ctx context.Context, userID, id int64) (*Attachment, error)
 
 	// Usage and limits.
 	AddUsage(ctx context.Context, userID int64, provider, day string, requests, in, out int64) error

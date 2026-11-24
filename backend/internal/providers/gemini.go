@@ -77,8 +77,14 @@ func (g *Gemini) ListModels(ctx context.Context, c Credential) ([]Model, error) 
 }
 
 type geminiPart struct {
-	Text    string `json:"text,omitempty"`
-	Thought bool   `json:"thought,omitempty"`
+	Text       string      `json:"text,omitempty"`
+	Thought    bool        `json:"thought,omitempty"`
+	InlineData *geminiBlob `json:"inlineData,omitempty"`
+}
+
+type geminiBlob struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type geminiContent struct {
@@ -88,7 +94,7 @@ type geminiContent struct {
 
 func (g *Gemini) StreamChat(ctx context.Context, c Credential, r ChatRequest, onDelta func(string) error) (Usage, error) {
 	var usage Usage
-	if err := checkNoAttachments(r.Messages); err != nil {
+	if err := checkAttachments(r.Messages); err != nil {
 		return usage, err
 	}
 	contents := make([]geminiContent, 0, len(r.Messages))
@@ -97,7 +103,14 @@ func (g *Gemini) StreamChat(ctx context.Context, c Credential, r ChatRequest, on
 		if m.Role == "assistant" {
 			role = "model"
 		}
-		contents = append(contents, geminiContent{Role: role, Parts: []geminiPart{{Text: m.Content}}})
+		parts := make([]geminiPart, 0, len(m.Attachments)+1)
+		for _, a := range m.Attachments {
+			parts = append(parts, geminiPart{InlineData: &geminiBlob{MimeType: a.MediaType, Data: a.Data}})
+		}
+		if m.Content != "" || len(parts) == 0 {
+			parts = append(parts, geminiPart{Text: m.Content})
+		}
+		contents = append(contents, geminiContent{Role: role, Parts: parts})
 	}
 	body := map[string]any{"contents": contents}
 	if r.System != "" {
