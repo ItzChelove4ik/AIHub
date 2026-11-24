@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "thinking...", "thought": true}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 8,"totalTokenCount": 8},"modelVersion": "gemini-test"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "Hi "}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 8,"candidatesTokenCount": 1,"totalTokenCount": 9},"modelVersion": "gemini-test"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "there"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 8,"candidatesTokenCount": 2,"thoughtsTokenCount": 4,"totalTokenCount": 14},"modelVersion": "gemini-test"}
+

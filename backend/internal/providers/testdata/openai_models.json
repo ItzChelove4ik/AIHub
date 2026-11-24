@@ -1,0 +1,5 @@
+{"object":"list","data":[
+{"id":"gpt-test-1","object":"model","owned_by":"system"},
+{"id":"text-embedding-test","object":"model","owned_by":"system"},
+{"id":"vendor/model-x","name":"Vendor: Model X","context_length":131072,"architecture":{"input_modalities":["text","image"]},"top_provider":{"max_completion_tokens":8192}}
+]}

@@ -1,0 +1,19 @@
+# Local development: cd backend && cp .env.example .env (fill AIHUB_MASTER_KEY) && docker compose up --build
+# Production (Caddy, TLS, the tunnel helper) lives in deploy/.
+services:
+  aihub-backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    environment:
+      AIHUB_LISTEN: ":8080"
+      AIHUB_DB_PATH: /data/aihub.db
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - aihub-data:/data
+    restart: unless-stopped
+
+volumes:
+  aihub-data:

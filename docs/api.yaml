@@ -1,0 +1,922 @@
+openapi: 3.1.0
+info:
+  title: AIHub API
+  version: 0.1.0
+  description: |
+    AIHub backend API: the source of truth for the iOS client.
+
+    * Access tokens are JWTs valid for 15 minutes; refresh tokens rotate on every
+      use, and presenting an already-used refresh token signs the device out.
+    * Errors are `{"error": {"code": "...", "message": "..."}}` (messages in Russian).
+    * Provider keys and channel links are secrets: keys are never returned after
+      saving, a channel's `openflux://` link is returned once.
+    * `/openai/v1/*` uses AIHub API keys (`ahk_live_...`) and OpenAI's error format.
+  license:
+    name: GPL-3.0
+servers:
+  - url: https://aihub.example.com
+security:
+  - bearer: []
+
+tags:
+  - name: auth
+  - name: connections
+  - name: chat
+  - name: apikeys
+  - name: tunnel
+  - name: admin
+  - name: openai-compatible
+
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Liveness
+      responses:
+        "200": { description: OK }
+  /readyz:
+    get:
+      security: []
+      summary: Readiness (database reachable)
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  version: { type: string }
+                  tunnel: { type: boolean, description: Channel management is configured }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      security: []
+      summary: Create an account and sign the device in
+      description: |
+        The first account (or the one with ADMIN_EMAIL) is admin. With
+        AIHUB_REGISTRATION=invite an `invite_code` from the admin is required; it
+        also binds the admin's invite channel to the new account and device.
+        Rate limited per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, device_id]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10, maxLength: 256 }
+                device_id: { type: string, maxLength: 128, description: Stable per install (identifierForVendor) }
+                device_name: { type: string, maxLength: 128 }
+                invite_code: { type: string }
+      responses:
+        "201": { $ref: "#/components/responses/Auth" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Sign in on a device
+      description: Five wrong passwords lock the email for 15 minutes. Rate limited per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, device_id]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                device_id: { type: string }
+                device_name: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Auth" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      summary: Rotate the refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tokens" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke this device's refresh tokens
+      responses:
+        "204": { description: Signed out }
+  /v1/me:
+    get:
+      tags: [auth]
+      summary: The current user
+      responses:
+        "200":
+          description: User
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  device_id: { type: integer, description: Server id of this device }
+  /v1/devices:
+    get:
+      tags: [auth]
+      summary: Signed-in devices
+      responses:
+        "200":
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: "#/components/schemas/Device" }
+  /v1/devices/{id}:
+    delete:
+      tags: [auth]
+      summary: Revoke a device (its tokens stop working at once)
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "204": { description: Revoked }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/providers:
+    get:
+      tags: [connections]
+      summary: Supported providers
+      responses:
+        "200":
+          description: Providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProviderSpec" }
+  /v1/connections:
+    get:
+      tags: [connections]
+      summary: Connected providers (never the keys)
+      responses:
+        "200":
+          description: Connections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connections:
+                    type: array
+                    items: { $ref: "#/components/schemas/Connection" }
+    post:
+      tags: [connections]
+      summary: Connect a provider with an API key
+      description: |
+        The key is checked by listing the provider's models, then stored encrypted
+        (AES-256-GCM). A key for an already connected provider replaces it. `custom`
+        needs `label` and `base_url` (https, OpenAI-compatible) and becomes provider
+        `custom-<label>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, api_key]
+              properties:
+                provider:
+                  type: string
+                  enum: [openai, anthropic, gemini, openrouter, xai, deepseek, mistral, groq, custom]
+                api_key: { type: string }
+                label: { type: string, maxLength: 64 }
+                base_url: { type: string, format: uri }
+      responses:
+        "201":
+          description: Connected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Connection" }
+        "400": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /v1/connections/{id}:
+    delete:
+      tags: [connections]
+      summary: Disconnect a provider
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/oauth/openrouter/start:
+    get:
+      tags: [connections]
+      summary: Start "Sign in with OpenRouter" (OAuth PKCE)
+      description: |
+        Returns the openrouter.ai URL to open in a WKWebView (through the tunnel
+        proxy when needed). After the user authorises, OpenRouter redirects to
+        `/v1/oauth/openrouter/callback`, where the server exchanges the code and
+        stores the key. The state is valid for 10 minutes.
+      responses:
+        "200":
+          description: Authorisation URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+  /v1/oauth/openrouter/callback:
+    get:
+      tags: [connections]
+      security: []
+      summary: OpenRouter redirect target (HTML page)
+      description: The page's `#aihub-oauth` element has `data-status` "ok" or "error" for the app to read.
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Connected (HTML) }
+        "400": { description: Failed (HTML) }
+
+  /v1/models:
+    get:
+      tags: [chat]
+      summary: Model catalog of every connected provider
+      description: Lists come from the providers' APIs and are cached for an hour.
+      responses:
+        "200":
+          description: Models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: "#/components/schemas/Model" }
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        provider: { type: string }
+                        error: { type: string }
+  /v1/chat:
+    post:
+      tags: [chat]
+      summary: Stream a chat answer (SSE)
+      description: |
+        Without `conversation_id` a conversation is created from `messages`. With it,
+        the stored history is sent first and `messages` are the new turns (usually one
+        user message). The last message must be from `user`.
+
+        Events (`text/event-stream`):
+        * `start` — `{"conversation_id", "user_message_id"}`
+        * `delta` — `{"text"}`
+        * `usage` — `{"input_tokens", "output_tokens"}`
+        * `done` — `{"conversation_id", "message_id", "stopped"}`
+        * `error` — `{"code", "message"}` (after `start`; earlier errors are JSON responses)
+
+        Comment lines (`: ping`) keep the stream alive. Closing the connection cancels
+        the provider request; the partial answer is saved with status `stopped`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatRequest" }
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/conversations:
+    get:
+      tags: [chat]
+      summary: Conversations, newest first
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: Search titles and messages }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: before, in: query, schema: { type: integer }, description: Id of the last conversation of the previous page }
+      responses:
+        "200":
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Conversation" }
+  /v1/conversations/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [chat]
+      summary: A conversation with its messages
+      responses:
+        "200":
+          description: Conversation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversation: { $ref: "#/components/schemas/Conversation" }
+                  messages:
+                    type: array
+                    items: { $ref: "#/components/schemas/Message" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [chat]
+      summary: Rename
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+    delete:
+      tags: [chat]
+      summary: Delete
+      responses:
+        "204": { description: Deleted }
+  /v1/usage:
+    get:
+      tags: [chat]
+      summary: Own usage per provider and day, with the effective limits
+      parameters:
+        - { name: days, in: query, schema: { type: integer, default: 30, maximum: 366 } }
+      responses:
+        "200":
+          description: Usage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  usage:
+                    type: array
+                    items: { $ref: "#/components/schemas/UsageRow" }
+                  limits: { $ref: "#/components/schemas/Limits" }
+
+  /v1/apikeys:
+    get:
+      tags: [apikeys]
+      summary: AIHub API keys (prefix only)
+      responses:
+        "200":
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items: { $ref: "#/components/schemas/APIKey" }
+    post:
+      tags: [apikeys]
+      summary: Create a key (shown in full only in this response)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 64 }
+                scopes:
+                  type: array
+                  items: { type: string, enum: [chat, models] }
+                  description: Default both
+                rpm: { type: integer, minimum: 0, maximum: 10000, description: Requests per minute, 0 = no limit }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string, example: ahk_live_... }
+                  info: { $ref: "#/components/schemas/APIKey" }
+  /v1/apikeys/{id}:
+    delete:
+      tags: [apikeys]
+      summary: Revoke
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "204": { description: Revoked }
+
+  /v1/tunnel/channels:
+    get:
+      tags: [tunnel]
+      summary: Own OpenFlux channels with their live state
+      responses:
+        "200":
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  channels:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+    post:
+      tags: [tunnel]
+      summary: Create this device's channel
+      description: |
+        One channel per device (an OpenFlux channel serves one connected device).
+        The response carries the `openflux://` link with the channel key, shown only
+        here: the app stores it in the Keychain.
+      responses:
+        "201":
+          description: Channel issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuedChannel" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/tunnel/channels/{id}:
+    delete:
+      tags: [tunnel]
+      summary: Remove a channel (own; admin: any)
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "204": { description: Removed }
+  /v1/tunnel/channels/{id}/rotate:
+    post:
+      tags: [tunnel]
+      summary: Replace the channel with a new one (new name and key)
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      responses:
+        "201":
+          description: New channel
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuedChannel" }
+
+  /v1/admin/users:
+    get:
+      tags: [admin]
+      summary: All users
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+  /v1/admin/users/{id}/limits:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [admin]
+      summary: A user's limits (own setting and effective values)
+      responses:
+        "200":
+          description: Limits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  limits: { $ref: "#/components/schemas/LimitsSetting" }
+                  effective: { $ref: "#/components/schemas/Limits" }
+    put:
+      tags: [admin]
+      summary: Set a user's daily limits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LimitsSetting" }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LimitsSetting" }
+  /v1/admin/usage:
+    get:
+      tags: [admin]
+      summary: Usage of every user (or one)
+      parameters:
+        - { name: days, in: query, schema: { type: integer, default: 30 } }
+        - { name: user_id, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Usage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  usage:
+                    type: array
+                    items: { $ref: "#/components/schemas/UsageRow" }
+  /v1/admin/tunnel/carriers:
+    get:
+      tags: [admin]
+      summary: Carrier pool (documents shown by their last characters only)
+      responses:
+        "200":
+          description: Carriers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  carriers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Carrier" }
+    post:
+      tags: [admin]
+      summary: Add a Yandex or Mail.ru document to the pool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, url]
+              properties:
+                type: { type: string, enum: [vyandex, mailru] }
+                url:
+                  type: string
+                  description: https://docs.yandex.ru/edit/d/… or https://cloud.mail.ru/public/…/…
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Carrier" }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/admin/tunnel/carriers/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    patch:
+      tags: [admin]
+      summary: Mark a carrier free or broken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [free, broken] }
+      responses:
+        "204": { description: Updated }
+    delete:
+      tags: [admin]
+      summary: Remove a carrier that is not assigned
+      responses:
+        "204": { description: Removed }
+  /v1/admin/tunnel/channels:
+    get:
+      tags: [admin]
+      summary: Every channel
+      responses:
+        "200":
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  channels:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+  /v1/admin/tunnel/invite:
+    post:
+      tags: [admin]
+      summary: Issue an invite channel
+      description: |
+        A channel bound to no one, with a one-time `invite_code`. The new user imports
+        the link (or QR) to reach the server through the whitelist, then registers
+        with the code; the channel becomes theirs.
+      responses:
+        "201":
+          description: Invite
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuedChannel" }
+
+  /openai/v1/models:
+    get:
+      tags: [openai-compatible]
+      security: [{ aihubKey: [] }]
+      summary: Models as `provider/model` (scope `models`)
+      responses:
+        "200":
+          description: OpenAI model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, const: list }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, example: anthropic/claude-model-id }
+                        object: { type: string, const: model }
+                        owned_by: { type: string }
+  /openai/v1/chat/completions:
+    post:
+      tags: [openai-compatible]
+      security: [{ aihubKey: [] }]
+      summary: OpenAI Chat Completions on the key owner's providers (scope `chat`)
+      description: |
+        `model` is `provider/model`. Text content only (string or text parts);
+        `system`/`developer` messages become the system prompt. `stream: true` returns
+        OpenAI chunks and `data: [DONE]`; `stream_options.include_usage` adds the
+        usage chunk. Counts against the owner's limits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, messages]
+              properties:
+                model: { type: string }
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role: { type: string, enum: [system, developer, user, assistant] }
+                      content: {}
+                stream: { type: boolean }
+                temperature: { type: number }
+                max_tokens: { type: integer }
+                max_completion_tokens: { type: integer }
+                stream_options:
+                  type: object
+                  properties:
+                    include_usage: { type: boolean }
+      responses:
+        "200": { description: chat.completion or an event stream of chat.completion.chunk }
+        "401": { description: Invalid key }
+        "429": { description: Rate or daily limit }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    aihubKey:
+      type: http
+      scheme: bearer
+      description: AIHub API key ahk_live_...
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Auth:
+      description: Signed in
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              user: { $ref: "#/components/schemas/User" }
+              tokens: { $ref: "#/components/schemas/Tokens" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    Tokens:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_at: { type: string, format: date-time }
+        token_type: { type: string, const: Bearer }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        is_admin: { type: boolean }
+        created_at: { type: string, format: date-time }
+    Device:
+      type: object
+      properties:
+        id: { type: integer }
+        device_id: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+        current: { type: boolean }
+    ProviderSpec:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [openai, anthropic, gemini] }
+        base_url: { type: string }
+        custom: { type: boolean }
+        oauth: { type: boolean, description: Supports "Sign in with" OAuth }
+    Connection:
+      type: object
+      properties:
+        id: { type: integer }
+        provider: { type: string, description: "Slug used by models and chats (openai, custom-mylab)" }
+        type: { type: string }
+        name: { type: string }
+        label: { type: string }
+        base_url: { type: string }
+        kind: { type: string, enum: [api_key, oauth] }
+        last4: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Model:
+      type: object
+      properties:
+        provider: { type: string }
+        id: { type: string }
+        display_name: { type: string }
+        context: { type: [integer, "null"] }
+        vision: { type: [boolean, "null"], description: null when the provider does not say }
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string }
+        attachments:
+          type: array
+          description: Images (planned; rejected for now)
+          items:
+            type: object
+            properties:
+              type: { type: string, const: image }
+              media_type: { type: string }
+              data: { type: string, contentEncoding: base64 }
+    ChatRequest:
+      type: object
+      required: [provider, model, messages]
+      properties:
+        conversation_id: { type: integer }
+        provider: { type: string }
+        model: { type: string }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ChatMessage" }
+        system: { type: string }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        max_tokens: { type: integer }
+    Conversation:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        system: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Message:
+      type: object
+      properties:
+        id: { type: integer }
+        role: { type: string }
+        content: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        status: { type: string, enum: [complete, stopped, error] }
+        created_at: { type: string, format: date-time }
+    UsageRow:
+      type: object
+      properties:
+        user_id: { type: integer }
+        provider: { type: string }
+        day: { type: string, format: date }
+        requests: { type: integer }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+    Limits:
+      type: object
+      description: 0 = unlimited
+      properties:
+        daily_requests: { type: integer }
+        daily_tokens: { type: integer }
+    LimitsSetting:
+      type: object
+      description: null = server default, 0 = unlimited
+      properties:
+        daily_requests: { type: [integer, "null"] }
+        daily_tokens: { type: [integer, "null"] }
+    APIKey:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        prefix: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        rpm: { type: integer }
+        last_used_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+    Channel:
+      type: object
+      properties:
+        id: { type: integer }
+        channel: { type: string, example: of-abc234 }
+        port: { type: integer }
+        transports:
+          type: array
+          items: { type: string, enum: [vyandex, mailru, cupsonline, direct] }
+        user_id: { type: [integer, "null"] }
+        device_id: { type: [integer, "null"] }
+        invite: { type: boolean }
+        state: { type: string, description: "systemd state (active, failed, ...), missing, or unknown" }
+        created_at: { type: string, format: date-time }
+    IssuedChannel:
+      allOf:
+        - $ref: "#/components/schemas/Channel"
+        - type: object
+          properties:
+            link: { type: string, description: "openflux://v1/... — carries the channel key, shown once" }
+            qr_png: { type: string, contentEncoding: base64 }
+            invite_code: { type: string, description: Admin invites only }
+    Carrier:
+      type: object
+      properties:
+        id: { type: integer }
+        type: { type: string, enum: [vyandex, mailru] }
+        hint: { type: string }
+        status: { type: string, enum: [free, assigned, broken] }
+        channel_id: { type: [integer, "null"] }
+        created_at: { type: string, format: date-time }

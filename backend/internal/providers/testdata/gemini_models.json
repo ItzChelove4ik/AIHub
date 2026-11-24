@@ -1,0 +1,4 @@
+{"models":[
+{"name":"models/gemini-test","baseModelId":"gemini-test","version":"001","displayName":"Gemini Test","inputTokenLimit":1048576,"outputTokenLimit":65536,"supportedGenerationMethods":["generateContent","countTokens"]},
+{"name":"models/embedding-test","displayName":"Embedding","inputTokenLimit":2048,"supportedGenerationMethods":["embedContent"]}
+]}
