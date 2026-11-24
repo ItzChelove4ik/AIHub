@@ -146,23 +146,24 @@ func (r *Runner) defaults() {
 }
 
 // writeTemp writes content to a fresh 0600 file and returns its path.
-func (r *Runner) writeTemp(content string) (string, error) {
+func (r *Runner) writeTemp(content string) (path string, err error) {
 	f, err := os.CreateTemp(r.TempDir, "aihub-nodectl-*.conf")
 	if err != nil {
 		return "", err
 	}
-	if err := f.Chmod(0o600); err != nil && !isWindows() {
-		f.Close()
-		os.Remove(f.Name())
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+		}
+	}()
+	if err = f.Chmod(0o600); err != nil && !isWindows() {
 		return "", err
 	}
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+	if _, err = f.WriteString(content); err != nil {
 		return "", err
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+	if err = f.Close(); err != nil {
 		return "", err
 	}
 	return f.Name(), nil
@@ -259,7 +260,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func Serve(ctx context.Context, l net.Listener, r *Runner, logf func(format string, args ...any)) error {
 	go func() {
 		<-ctx.Done()
-		l.Close()
+		_ = l.Close()
 	}()
 	for {
 		conn, err := l.Accept()

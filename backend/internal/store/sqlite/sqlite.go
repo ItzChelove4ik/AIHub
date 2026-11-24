@@ -185,7 +185,7 @@ func (s *DB) ListUsers(ctx context.Context) ([]store.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.User
 	for rows.Next() {
 		u, err := scanUser(rows)
@@ -234,7 +234,7 @@ func (s *DB) ListDevices(ctx context.Context, userID int64) ([]store.Device, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Device
 	for rows.Next() {
 		d, err := scanDevice(rows)
@@ -360,7 +360,7 @@ func (s *DB) ListCredentials(ctx context.Context, userID int64) ([]store.Credent
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Credential
 	for rows.Next() {
 		c, err := scanCred(rows)
@@ -460,7 +460,7 @@ func (s *DB) ListConversations(ctx context.Context, userID int64, q store.Conver
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Conversation
 	for rows.Next() {
 		c, err := scanConv(rows)
@@ -500,7 +500,7 @@ func (s *DB) ListMessages(ctx context.Context, conversationID int64) ([]store.Me
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Message
 	for rows.Next() {
 		var m store.Message
@@ -542,7 +542,7 @@ func (s *DB) ListUsage(ctx context.Context, userID int64, fromDay string) ([]sto
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.UsageRow
 	for rows.Next() {
 		var u store.UsageRow
@@ -614,7 +614,7 @@ func (s *DB) ListAPIKeys(ctx context.Context, userID int64) ([]store.APIKey, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.APIKey
 	for rows.Next() {
 		k, err := scanAPIKey(rows)
@@ -704,7 +704,7 @@ func (s *DB) ListChannels(ctx context.Context, userID *int64) ([]store.Channel, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Channel
 	for rows.Next() {
 		c, err := scanChannel(rows)
@@ -731,7 +731,7 @@ func (s *DB) UsedPorts(ctx context.Context) (map[int]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[int]bool{}
 	for rows.Next() {
 		var p int
@@ -782,7 +782,7 @@ func (s *DB) listCarriers(ctx context.Context, where string, args ...any) ([]sto
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []store.Carrier
 	for rows.Next() {
 		c, err := scanCarrier(rows)

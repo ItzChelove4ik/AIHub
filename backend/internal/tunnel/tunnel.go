@@ -412,7 +412,7 @@ func (s *Service) Delete(ctx context.Context, userID int64, admin bool, id int64
 	if _, err := s.ctl.Run(ctx, nodectl.Request{Op: "remove", Channel: c.Channel}); err != nil {
 		var se *nodectl.ScriptError
 		// Already gone from the server: still forget it here.
-		if !(errors.As(err, &se) && strings.Contains(se.Message, "нет на сервере")) {
+		if !errors.As(err, &se) || !strings.Contains(se.Message, "нет на сервере") {
 			return fmt.Errorf("удаление канала: %w", err)
 		}
 	}

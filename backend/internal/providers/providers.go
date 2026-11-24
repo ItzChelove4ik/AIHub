@@ -230,7 +230,7 @@ func ValidateBaseURL(raw string, allowHTTP bool) (string, error) {
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", errors.New("base_url должен быть полным URL вида https://host/v1")
 	}
-	if u.Scheme != "https" && !(allowHTTP && u.Scheme == "http") {
+	if u.Scheme != "https" && (!allowHTTP || u.Scheme != "http") {
 		return "", errors.New("base_url должен начинаться с https://")
 	}
 	return raw, nil

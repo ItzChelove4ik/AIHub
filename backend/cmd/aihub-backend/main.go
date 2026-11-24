@@ -69,7 +69,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	box, err := secure.NewBox(cfg.MasterKey)
 	if err != nil {
 		return err

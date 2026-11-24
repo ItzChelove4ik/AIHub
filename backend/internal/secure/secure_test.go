@@ -67,7 +67,7 @@ func TestTokens(t *testing.T) {
 	if len(a) != 40 || a == b {
 		t.Fatal("random string")
 	}
-	if HashToken("x") != HashToken("x") || len(HashToken("x")) != 64 {
+	if HashToken("x") != HashToken(string([]byte{'x'})) || HashToken("x") == HashToken("y") || len(HashToken("x")) != 64 {
 		t.Fatal("hash")
 	}
 	if Last4("sk-abcdef") != "cdef" || Last4("ab") != "**" {
