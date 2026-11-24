@@ -28,9 +28,15 @@ import (
 )
 
 const (
-	// DefaultScript is AIHub's own pinned copy of node-install.sh. Not
-	// /opt/openflux-node/node-install.sh: the script deletes that directory
-	// when the last channel goes, and its updater rewrites the file there.
+	// SystemScript is the node-install.sh the server's OpenFlux install
+	// keeps for itself (its updater follows that install's own release
+	// repository). When it exists it is used: running a script of another
+	// OpenFlux repository would switch the shared core under every channel
+	// on the server, the AIHub ones and the owner's own.
+	SystemScript = "/opt/openflux-node/node-install.sh"
+	// DefaultScript is AIHub's pinned, hash-checked copy, for a server
+	// without OpenFlux yet (node-install.sh deletes /opt/openflux-node
+	// when its last channel goes, so the system copy can disappear).
 	DefaultScript = "/usr/local/lib/aihub/node-install.sh"
 	maxConfig     = 16 << 10
 	maxOutput     = 256 << 10
@@ -136,10 +142,21 @@ type Runner struct {
 	Timeout time.Duration
 }
 
-func (r *Runner) defaults() {
-	if r.Script == "" {
-		r.Script = DefaultScript
+// script is the node-install.sh this run uses: Script when set (tests),
+// else SystemScript when present, else DefaultScript. Chosen on every run,
+// because the system copy appears with the first channel and can go with
+// the last.
+func (r *Runner) script() string {
+	if r.Script != "" {
+		return r.Script
 	}
+	if fi, err := os.Stat(SystemScript); err == nil && fi.Mode().IsRegular() {
+		return SystemScript
+	}
+	return DefaultScript
+}
+
+func (r *Runner) defaults() {
 	if r.Shell == "" {
 		r.Shell = "/bin/sh"
 	}
@@ -211,7 +228,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (json.RawMessage, error) 
 	default:
 		return nil, fmt.Errorf("operation %q not allowed", req.Op)
 	}
-	cmd := exec.CommandContext(ctx, r.Shell, append([]string{r.Script}, args...)...)
+	cmd := exec.CommandContext(ctx, r.Shell, append([]string{r.script()}, args...)...)
 	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
 	if stdin == nil {
 		stdin = strings.NewReader("")

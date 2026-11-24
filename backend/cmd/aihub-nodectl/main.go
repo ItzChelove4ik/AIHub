@@ -1,7 +1,8 @@
 // Command aihub-nodectl is the privileged helper that lets the AIHub backend
 // manage OpenFlux exit channels without root of its own. It only allows
-// apply, remove, list and status of OpenFlux's node-install.sh (the pinned
-// copy install.sh puts in /usr/local/lib/aihub).
+// apply, remove, list and status of OpenFlux's node-install.sh: the one the
+// server's OpenFlux install already has, else the pinned copy install.sh
+// puts in /usr/local/lib/aihub.
 //
 //	aihub-nodectl apply              config (key=value lines) on stdin
 //	aihub-nodectl remove CHANNEL
@@ -35,7 +36,7 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
-	runner := &nodectl.Runner{Script: nodectl.DefaultScript}
+	runner := &nodectl.Runner{} // script chosen per run, see Runner.script
 	if s := os.Getenv("AIHUB_NODECTL_SCRIPT"); s != "" && os.Geteuid() != 0 {
 		// Only for tests as a normal user: root always runs the fixed path.
 		runner.Script = s

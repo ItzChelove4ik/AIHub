@@ -38,6 +38,7 @@ sudo sh /tmp/aihub/deploy/install.sh --admin-email you@example.com --ip 203.0.11
 | `--version` | Тег релиза `backend-v*` (по умолчанию последний) |
 | `--binaries DIR` | Взять собранные бинарники из папки (с `SHA256SUMS`) вместо релиза |
 | `--registration` | `invite` (по умолчанию) или `open` |
+| `--https-port` | Порт HTTPS (по умолчанию 443; если 443 занят, например VPN, возьмите 8443). Порт 80 нужен свободным для Let's Encrypt |
 | `--enable-ufw` | Включить ufw, если выключен (порт SSH остаётся открытым, `--ssh-port`) |
 
 ## Что где лежит
@@ -47,11 +48,12 @@ sudo sh /tmp/aihub/deploy/install.sh --admin-email you@example.com --ip 203.0.11
 | `/opt/aihub/.env` | Настройки и **`AIHUB_MASTER_KEY`** (0600). Сохраните ключ отдельно: без него ключи провайдеров и бэкапы не расшифровать |
 | `/opt/aihub/docker-compose.yml`, `Caddyfile` | Сервисы |
 | `/usr/local/bin/aihub-nodectl`, `aihub-nodectl.service` | Хелпер, root, разрешает только `apply/remove/list/status` |
-| `/usr/local/lib/aihub/node-install.sh` | Скрипт OpenFlux, закреплён на коммите с проверкой SHA-256 (как в `provision/pin.go`) |
+| `/usr/local/lib/aihub/node-install.sh` | Запасной скрипт OpenFlux (форк meepo161), закреплён на коммите с проверкой SHA-256, как в `provision/pin.go`. Если на сервере уже есть OpenFlux (`/opt/openflux-node/node-install.sh`), хелпер берёт **его**: скрипт из другого репозитория переключил бы общее ядро под всеми каналами сервера |
 | `/var/backups/aihub` | Ежедневные копии БД (`aihub-backup.timer`), 14 дней |
 
-Почему хелпер не вызывает `/opt/openflux-node/node-install.sh`: эту папку скрипт удаляет
-целиком при удалении последнего канала, а его автообновление переписывает файл там.
+Каналы AIHub живут рядом с вашими собственными каналами OpenFlux и VPN: установщик не
+трогает чужие контейнеры и не заменяет уже установленный Docker (только добавляет
+compose-плагин), HTTPS можно вынести с 443 (`--https-port`), если порт занят.
 
 ## Безопасность
 

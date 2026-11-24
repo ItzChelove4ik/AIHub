@@ -1,5 +1,7 @@
 # TLS from Let's Encrypt for AIHUB_DOMAIN (a domain, or <ip>.sslip.io).
-{$AIHUB_DOMAIN} {
+# The HTTPS port is configurable: 443 may already belong to a VPN on the
+# same VPS. Certificates come over HTTP-01 on port 80 either way.
+{$AIHUB_DOMAIN}:{$AIHUB_HTTPS_PORT} {
 	# No encode: the chat stream (SSE) must not be buffered by compression,
 	# JSON answers are small and images are compressed already.
 	reverse_proxy aihub-backend:8080 {

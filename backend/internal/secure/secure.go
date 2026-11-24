@@ -89,9 +89,11 @@ type argonParams struct {
 	threads      uint8
 }
 
-// passwordParams follow RFC 9106's second recommendation (t=3, 64 MiB),
-// with lighter parallelism for a small VPS.
-var passwordParams = argonParams{time: 3, memory: 64 * 1024, threads: 2}
+// passwordParams are OWASP's argon2id recommendation (m=19 MiB, t=2, p=1):
+// the server is a 1 GB VPS, and every sign-in holds this much memory while
+// it hashes. Hashes carry their own parameters, so raising these later
+// keeps old hashes valid.
+var passwordParams = argonParams{time: 2, memory: 19 * 1024, threads: 1}
 
 // HashPassword returns a PHC-formatted argon2id hash.
 func HashPassword(pw string) (string, error) {

@@ -5,7 +5,7 @@
 #
 #   sh install.sh --admin-email you@example.com (--domain aihub.example.com | --ip 203.0.113.7)
 #                 [--version backend-vX.Y.Z | --binaries DIR] [--registration invite|open]
-#                 [--enable-ufw] [--ssh-port 22]
+#                 [--https-port 443] [--enable-ufw] [--ssh-port 22]
 #
 # What it does:
 #   * Docker Engine + compose plugin (Docker's apt repository) if missing;
@@ -27,16 +27,16 @@ umask 022
 REPO="ItzChelove4ik/AIHub"
 # OpenFlux node-install.sh, pinned like third_party/openflux/provision/pin.go
 # (CI checks that these stay equal).
-NODE_SCRIPT_REPO="p1neappleXpress/OpenFlux"
-NODE_SCRIPT_COMMIT="3459bfdf73be83b1128865de8737deb009ce0e7e"
-NODE_SCRIPT_SHA256="8a75cfd72a642a464d8d2e871172bcf37b1241d0d37e9323568557d3033f250f"
+NODE_SCRIPT_REPO="meepo161/OpenFlux"
+NODE_SCRIPT_COMMIT="544a514c819b4a4a75a6b2c0b302540cb8d2024c"
+NODE_SCRIPT_SHA256="84afc2b39fe84e08305b33267800013c154622a3e2265520292e4f6d3d05e2b6"
 
 APP_DIR=/opt/aihub
 LIB_DIR=/usr/local/lib/aihub
 BACKUP_DIR=/var/backups/aihub
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 
-DOMAIN="" IP="" ADMIN_EMAIL="" AIHUB_VERSION="" BIN_DIR="" REGISTRATION="invite" ENABLE_UFW=0 SSH_PORT=22
+DOMAIN="" IP="" ADMIN_EMAIL="" AIHUB_VERSION="" BIN_DIR="" REGISTRATION="invite" ENABLE_UFW=0 SSH_PORT=22 HTTPS_PORT=443
 
 say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -52,6 +52,7 @@ while [ $# -gt 0 ]; do
         --registration) REGISTRATION=$2; shift 2 ;;
         --enable-ufw) ENABLE_UFW=1; shift ;;
         --ssh-port) SSH_PORT=$2; shift 2 ;;
+        --https-port) HTTPS_PORT=$2; shift 2 ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -61,6 +62,7 @@ done
 [ -n "$ADMIN_EMAIL" ] || die "--admin-email is required (only this account may register without an invite)"
 case "$REGISTRATION" in invite|open) ;; *) die "--registration: invite or open" ;; esac
 case "$SSH_PORT" in ''|*[!0-9]*) die "--ssh-port must be a number" ;; esac
+case "$HTTPS_PORT" in ''|*[!0-9]*) die "--https-port must be a number" ;; esac
 if [ -z "$DOMAIN" ]; then
     [ -n "$IP" ] || die "give --domain or --ip (then <ip>.sslip.io is used)"
     printf '%s' "$IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || die "--ip must be an IPv4 address"
@@ -68,6 +70,16 @@ if [ -z "$DOMAIN" ]; then
 fi
 printf '%s' "$DOMAIN" | grep -Eq '^[A-Za-z0-9.-]+$' || die "bad domain"
 [ -d /run/systemd/system ] || die "systemd is required"
+
+# Ports 80 (Let's Encrypt) and HTTPS_PORT must be free, or already ours.
+port_owner() { ss -Hltnp "sport = :$1" 2>/dev/null | head -n 1; }
+for port in 80 "$HTTPS_PORT"; do
+    owner=$(port_owner "$port")
+    if [ -n "$owner" ] && ! docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -q "^aihub-caddy-1 .*:$port->"; then
+        die "port $port is taken ($owner); pick another with --https-port (80 must stay free for Let's Encrypt)"
+    fi
+done
+if [ "$HTTPS_PORT" = 443 ]; then PUBLIC_URL="https://$DOMAIN"; else PUBLIC_URL="https://$DOMAIN:$HTTPS_PORT"; fi
 
 case "$(uname -m)" in
     x86_64|amd64) ARCH=amd64 ;;
@@ -89,7 +101,22 @@ if ! have curl || ! have openssl || ! have sha256sum; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates openssl coreutils >/dev/null
 fi
 
-if ! have docker || ! docker compose version >/dev/null 2>&1; then
+if have docker && ! docker compose version >/dev/null 2>&1; then
+    # Docker is already there and may run other containers (VPNs, bots):
+    # never replace or restart the engine, only add the compose plugin
+    # that matches the installed packages.
+    have apt-get || die "install the docker compose plugin first"
+    say "Adding the docker compose plugin (the Docker engine stays as it is)"
+    apt-get update -qq
+    if dpkg -s docker-ce >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin >/dev/null
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2 >/dev/null
+    fi
+    docker compose version >/dev/null 2>&1 || die "could not add docker compose; install it by hand"
+fi
+
+if ! have docker; then
     case "$OS_ID" in
         ubuntu|debian) ;;
         *) die "install Docker Engine with the compose plugin first (https://docs.docker.com/engine/install/)" ;;
@@ -196,7 +223,8 @@ set_env() {
     fi
 }
 set_env AIHUB_DOMAIN "$DOMAIN"
-set_env AIHUB_PUBLIC_URL "https://$DOMAIN"
+set_env AIHUB_PUBLIC_URL "$PUBLIC_URL"
+set_env AIHUB_HTTPS_PORT "$HTTPS_PORT"
 set_env TUNNEL_PUBLIC_HOST "$DOMAIN"
 set_env ADMIN_EMAIL "$ADMIN_EMAIL"
 set_env AIHUB_REGISTRATION "$REGISTRATION"
@@ -209,18 +237,17 @@ chmod 0600 "$env_file"
 if have ufw; then
     ufw allow "$SSH_PORT/tcp" >/dev/null
     ufw allow 80/tcp >/dev/null
-    ufw allow 443/tcp >/dev/null
-    ufw allow 443/udp >/dev/null
+    ufw allow "$HTTPS_PORT/tcp" >/dev/null
+    ufw allow "$HTTPS_PORT/udp" >/dev/null
     if [ "$ENABLE_UFW" = 1 ] && ! ufw status | grep -q "Status: active"; then
         say "Enabling ufw (SSH port $SSH_PORT stays open)"
         ufw --force enable >/dev/null
     fi
 elif have firewall-cmd && firewall-cmd --state >/dev/null 2>&1; then
-    firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
-    firewall-cmd --permanent --add-port=443/udp >/dev/null
+    firewall-cmd --permanent --add-service=http --add-port="$HTTPS_PORT/tcp" --add-port="$HTTPS_PORT/udp" >/dev/null
     firewall-cmd --reload >/dev/null
 fi
-# Docker publishes 80/443 itself; the channel ports are opened per channel
+# Docker publishes 80 and the HTTPS port itself; the channel ports are opened per channel
 # by node-install.sh (ufw/firewalld) when it installs them.
 
 # ---- start -------------------------------------------------------------------
@@ -236,9 +263,9 @@ install -m 0644 "$SRC_DIR/systemd/aihub-backup.timer" /etc/systemd/system/aihub-
 systemctl daemon-reload
 systemctl enable --now aihub-backup.timer >/dev/null 2>&1
 
-say "Waiting for https://$DOMAIN/readyz (Let's Encrypt can take a minute)"
+say "Waiting for $PUBLIC_URL/readyz (Let's Encrypt can take a minute)"
 i=0
-until curl -fsS --max-time 10 "https://$DOMAIN/readyz" >/dev/null 2>&1; do
+until curl -fsS --max-time 10 "$PUBLIC_URL/readyz" >/dev/null 2>&1; do
     i=$((i + 1))
     if [ $i -ge 30 ]; then
         echo "not ready yet; check: cd $APP_DIR && docker compose logs" >&2
@@ -246,7 +273,7 @@ until curl -fsS --max-time 10 "https://$DOMAIN/readyz" >/dev/null 2>&1; do
     fi
     sleep 5
 done
-curl -fsS "https://$DOMAIN/readyz"; echo
-say "AIHub is up at https://$DOMAIN"
+curl -fsS "$PUBLIC_URL/readyz"; echo
+say "AIHub is up at $PUBLIC_URL"
 echo "Next: register $ADMIN_EMAIL in the app (or POST /v1/auth/register), then add carriers and keys."
 echo "Back up $env_file (AIHUB_MASTER_KEY) somewhere safe."

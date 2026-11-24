@@ -17,6 +17,8 @@ services:
       AIHUB_TRUST_PROXY: "true"
       NODECTL_MODE: socket
       NODECTL_SOCKET: /run/aihub-nodectl/nodectl.sock
+      # Small VPS: make the Go GC give memory back early.
+      GOMEMLIMIT: 160MiB
     # The socket belongs to group "aihub" on the host (0660).
     group_add:
       - "${AIHUB_GID:?run install.sh}"
@@ -40,10 +42,11 @@ services:
     image: caddy:2
     environment:
       AIHUB_DOMAIN: "${AIHUB_DOMAIN:?run install.sh}"
+      AIHUB_HTTPS_PORT: "${AIHUB_HTTPS_PORT:-443}"
     ports:
       - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${AIHUB_HTTPS_PORT:-443}:${AIHUB_HTTPS_PORT:-443}"
+      - "${AIHUB_HTTPS_PORT:-443}:${AIHUB_HTTPS_PORT:-443}/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
