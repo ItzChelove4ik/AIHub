@@ -1,12 +1,7 @@
 # TLS from Let's Encrypt for AIHUB_DOMAIN (a domain, or <ip>.sslip.io).
 {$AIHUB_DOMAIN} {
-	encode {
-		# Never compress the chat stream: it must reach the phone as it comes.
-		match {
-			not header Content-Type text/event-stream*
-		}
-		gzip
-	}
+	# No encode: the chat stream (SSE) must not be buffered by compression,
+	# JSON answers are small and images are compressed already.
 	reverse_proxy aihub-backend:8080 {
 		# SSE: pass every chunk on at once.
 		flush_interval -1

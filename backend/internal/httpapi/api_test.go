@@ -44,7 +44,10 @@ func fakeOpenAI(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"data":[{"id":"fake-model"}]}`)
 		case "/v1/chat/completions":
 			raw, _ := io.ReadAll(r.Body)
-			lastProviderBody.Store(string(raw))
+			// The background title request must not overwrite the chat request.
+			if !strings.Contains(string(raw), "Придумай очень короткий заголовок") {
+				lastProviderBody.Store(string(raw))
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, part := range []string{"Hello", " world"} {
 				io.WriteString(w, `data: {"choices":[{"delta":{"content":"`+part+`"}}]}`+"\n\n")
