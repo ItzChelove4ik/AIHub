@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,14 @@ func fakeProvider(t *testing.T, authHeader, authValue string, routes map[string]
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			*captured = body
 		}
-		for prefix, file := range routes {
+		// Longest prefix first: "/models/x:stream..." must not match "/models".
+		prefixes := make([]string, 0, len(routes))
+		for p := range routes {
+			prefixes = append(prefixes, p)
+		}
+		sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
+		for _, prefix := range prefixes {
+			file := routes[prefix]
 			if strings.HasPrefix(r.URL.Path, prefix) {
 				if strings.HasSuffix(file, ".sse") {
 					w.Header().Set("Content-Type", "text/event-stream")

@@ -16,7 +16,8 @@ import (
 // fakeScript stands in for node-install.sh: it records its arguments, the
 // mode and content of the config file, and answers like the real script.
 const fakeScript = `#!/bin/sh
-log="$FAKE_LOG"
+# The helper runs the script with a clean environment: log next to it.
+log="$(dirname "$0")/log"
 echo "args: $*" >> "$log"
 case "$1" in
   apply)
@@ -46,7 +47,6 @@ func newRunner(t *testing.T) (*Runner, string) {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(dir, "log")
-	t.Setenv("FAKE_LOG", logPath)
 	return &Runner{Script: script, Shell: "/bin/sh", TempDir: dir}, logPath
 }
 
