@@ -12,6 +12,11 @@ class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var unauthorizedOnce = false
     static let lock = NSLock()
 
+    static func clearServed() {
+        lock.lock(); defer { lock.unlock() }
+        served = []
+    }
+
     static func reset() {
         lock.lock(); defer { lock.unlock() }
         directDown = false
@@ -118,7 +123,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(route, .tunnel)
         XCTAssertTrue(StubProtocol.served.contains("tunnel /v1/me"))
         // The route is remembered: the next request skips the probe.
-        StubProtocol.lock.lock(); StubProtocol.served = []; StubProtocol.lock.unlock()
+        StubProtocol.clearServed()
         _ = try await api.send(APIRequest("GET", "v1/me"), MeResponse.self)
         XCTAssertEqual(StubProtocol.served, ["tunnel /v1/me"])
     }

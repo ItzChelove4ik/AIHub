@@ -51,7 +51,17 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
+      - name: Build AIHub (device, unsigned)
+        id: app
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project AIHub.xcodeproj -scheme AIHub -sdk iphoneos -configuration Release \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
+            | grep -E "error:|warning: .*(Sendable|isolat)|BUILD (SUCCEEDED|FAILED)|\*\*" | head -n 200
+
       - name: Test AIHubKit (simulator)
+        if: success() || failure()
         working-directory: ios
         run: |
           udid=$(xcrun simctl list devices available -j | python3 -c "
@@ -64,15 +74,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO | tail -n 60
           exit ${PIPESTATUS[0]}
 
-      - name: Build AIHub (device, unsigned)
-        working-directory: ios
-        run: |
-          set -o pipefail
-          xcodebuild -project AIHub.xcodeproj -scheme AIHub -sdk iphoneos -configuration Release \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
-            | grep -E "error:|warning: .*(Sendable|isolat)|BUILD (SUCCEEDED|FAILED)|\*\*" | head -n 200
-
       - name: Package IPA
+        if: steps.app.outcome == 'success'
         working-directory: ios
         run: |
           app=build/Build/Products/Release-iphoneos/AIHub.app
@@ -82,6 +85,7 @@ jobs:
           ls -lh AIHub.ipa
 
       - uses: actions/upload-artifact@v4
+        if: steps.app.outcome == 'success'
         with:
           name: AIHub-ipa
           path: ios/AIHub.ipa
