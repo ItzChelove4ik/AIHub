@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,6 +34,9 @@ var version = "dev"
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
+	}
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		os.Exit(backup(os.Args[2:]))
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -149,5 +153,26 @@ func healthcheck() int {
 	if resp.StatusCode != 200 {
 		return 1
 	}
+	return 0
+}
+
+// backup writes a consistent copy of the database (VACUUM INTO) while the
+// server runs: aihub-backend backup /backups/aihub-2026-01-01.db
+func backup(args []string) int {
+	if len(args) != 1 || args[0] == "" {
+		fmt.Fprintln(os.Stderr, "usage: aihub-backend backup DEST.db")
+		return 2
+	}
+	path := os.Getenv("AIHUB_DB_PATH")
+	if path == "" {
+		path = "aihub.db"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := sqlite.Backup(ctx, path, args[0]); err != nil {
+		fmt.Fprintln(os.Stderr, "backup:", err)
+		return 1
+	}
+	fmt.Println("backup written:", args[0])
 	return 0
 }

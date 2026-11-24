@@ -1,0 +1,61 @@
+# AIHub on the VPS: the backend behind Caddy (automatic TLS).
+# install.sh puts this file into /opt/aihub with .env and build/ next to it.
+# The OpenFlux exit nodes run on the host (systemd, openflux-node@<channel>);
+# the backend reaches them only through aihub-nodectl's unix socket.
+name: aihub
+
+services:
+  aihub-backend:
+    build:
+      context: ./build
+      dockerfile: Dockerfile.runtime
+    image: aihub-backend:local
+    env_file: .env
+    environment:
+      AIHUB_LISTEN: ":8080"
+      AIHUB_DB_PATH: /data/aihub.db
+      AIHUB_TRUST_PROXY: "true"
+      NODECTL_MODE: socket
+      NODECTL_SOCKET: /run/aihub-nodectl/nodectl.sock
+    # The socket belongs to group "aihub" on the host (0660).
+    group_add:
+      - "${AIHUB_GID:?run install.sh}"
+    volumes:
+      - aihub-data:/data
+      - /var/backups/aihub:/backups
+      - /run/aihub-nodectl:/run/aihub-nodectl
+    expose:
+      - "8080"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp   # SQLite's temp files (VACUUM INTO for backups)
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  caddy:
+    image: caddy:2
+    environment:
+      AIHUB_DOMAIN: "${AIHUB_DOMAIN:?run install.sh}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - aihub-backend
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+volumes:
+  aihub-data:
+  caddy-data:
+  caddy-config:

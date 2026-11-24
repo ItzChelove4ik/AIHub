@@ -1,0 +1,10 @@
+# Runtime image for the VPS: the release binary (checked against its
+# SHA-256 by install.sh) on distroless, so the server never compiles Go.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY aihub-backend /usr/local/bin/aihub-backend
+COPY --chown=65532:65532 data /data
+ENV AIHUB_LISTEN=:8080 AIHUB_DB_PATH=/data/aihub.db
+EXPOSE 8080
+USER nonroot:nonroot
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["/usr/local/bin/aihub-backend", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/aihub-backend"]

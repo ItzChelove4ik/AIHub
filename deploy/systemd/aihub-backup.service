@@ -1,0 +1,8 @@
+[Unit]
+Description=AIHub database backup
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/aihub
+ExecStart=/opt/aihub/backup.sh

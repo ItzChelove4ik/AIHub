@@ -95,7 +95,7 @@ from the pool the admin fills (`/v1/admin/tunnel/carriers`); cups.online rooms a
 created automatically; direct to `TUNNEL_PUBLIC_HOST` is always the backup.
 
 `aihub-nodectl` runs as root on the VPS and allows only `apply`, `remove`, `list` and
-`status` of `/opt/openflux-node/node-install.sh`; the config goes through a 0600 temp
+`status` of OpenFlux's `node-install.sh` (a pinned, hash-checked copy in `/usr/local/lib/aihub`); the config goes through a 0600 temp
 file, never through arguments. The backend reaches it either through a unix socket
 (`aihub-nodectl serve`, `NODECTL_MODE=socket`, for the Docker deployment: no Docker
 socket, no sudo in the container) or through a sudoers rule for this one binary

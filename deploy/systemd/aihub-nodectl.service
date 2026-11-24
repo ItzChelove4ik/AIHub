@@ -1,0 +1,21 @@
+[Unit]
+Description=AIHub privileged helper for OpenFlux channels (apply/remove/list/status only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root: node-install.sh needs it to manage openflux-node@ units.
+ExecStart=/usr/local/bin/aihub-nodectl serve -socket /run/aihub-nodectl/nodectl.sock -group aihub
+RuntimeDirectory=aihub-nodectl
+RuntimeDirectoryMode=0750
+# Keep the directory across restarts: the backend container bind-mounts it.
+RuntimeDirectoryPreserve=yes
+Restart=on-failure
+RestartSec=3
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

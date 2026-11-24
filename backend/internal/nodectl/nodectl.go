@@ -28,7 +28,10 @@ import (
 )
 
 const (
-	DefaultScript = "/opt/openflux-node/node-install.sh"
+	// DefaultScript is AIHub's own pinned copy of node-install.sh. Not
+	// /opt/openflux-node/node-install.sh: the script deletes that directory
+	// when the last channel goes, and its updater rewrites the file there.
+	DefaultScript = "/usr/local/lib/aihub/node-install.sh"
 	maxConfig     = 16 << 10
 	maxOutput     = 256 << 10
 )

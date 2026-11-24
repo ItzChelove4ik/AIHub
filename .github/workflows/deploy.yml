@@ -1,0 +1,43 @@
+name: deploy-checks
+
+on:
+  push:
+    branches: [main]
+    paths: ["deploy/**", "docs/api.yaml", "third_party/**", ".github/workflows/deploy.yml"]
+  pull_request:
+    paths: ["deploy/**", "docs/api.yaml", "third_party/**", ".github/workflows/deploy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: shellcheck
+        run: shellcheck deploy/install.sh deploy/backup.sh
+      - name: node-install.sh pin matches OpenFlux's provision/pin.go
+        run: |
+          pin=third_party/openflux/provision/pin.go
+          for v in Commit SHA256; do
+            want=$(grep -E "Pinned$v *=" $pin | cut -d'"' -f2)
+            got=$(grep -E "^NODE_SCRIPT_$(echo $v | tr a-z A-Z)=" deploy/install.sh | cut -d'"' -f2)
+            echo "$v: pin.go=$want install.sh=$got"
+            [ -n "$want" ] && [ "$want" = "$got" ]
+          done
+          commit=$(grep -E '^NODE_SCRIPT_COMMIT=' deploy/install.sh | cut -d'"' -f2)
+          sha=$(grep -E '^NODE_SCRIPT_SHA256=' deploy/install.sh | cut -d'"' -f2)
+          git -C third_party/openflux fetch -q origin "$commit"
+          echo "$sha  -" > want.txt
+          git -C third_party/openflux show "$commit:deploy/node-install.sh" | sha256sum -c want.txt
+      - name: docker compose config
+        working-directory: deploy
+        run: touch .env && AIHUB_DOMAIN=example.com AIHUB_GID=999 docker compose config -q
+      - name: Caddyfile
+        run: docker run --rm -e AIHUB_DOMAIN=example.com -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: OpenAPI parses
+        run: python3 -c "import yaml; d = yaml.safe_load(open('docs/api.yaml')); print(len(d['paths']), 'paths')"

@@ -52,12 +52,14 @@ func TestRegisterFirstIsAdmin(t *testing.T) {
 func TestAdminEmailAndInviteOnly(t *testing.T) {
 	ctx := context.Background()
 	s := newService(t, "boss@example.com", "invite")
-	u, _, err := s.Register(ctx, RegisterInput{Email: "first@example.com", Password: pw, DeviceID: "d"})
+	// With ADMIN_EMAIL and invite-only, nobody gets in first without an invite.
+	if _, _, err := s.Register(ctx, RegisterInput{Email: "first@example.com", Password: pw, DeviceID: "d"}); !errors.Is(err, ErrInviteRequired) {
+		t.Fatalf("invite-only, first non-admin: %v", err)
+	}
+	open := newService(t, "boss@example.com", "open")
+	u, _, err := open.Register(ctx, RegisterInput{Email: "first@example.com", Password: pw, DeviceID: "d"})
 	if err != nil || u.IsAdmin {
 		t.Fatalf("with ADMIN_EMAIL the first user is not admin: %+v %v", u, err)
-	}
-	if _, _, err := s.Register(ctx, RegisterInput{Email: "second@example.com", Password: pw, DeviceID: "d"}); !errors.Is(err, ErrInviteRequired) {
-		t.Fatalf("invite-only: %v", err)
 	}
 	boss, _, err := s.Register(ctx, RegisterInput{Email: "boss@example.com", Password: pw, DeviceID: "d"})
 	if err != nil || !boss.IsAdmin {

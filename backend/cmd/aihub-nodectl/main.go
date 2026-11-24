@@ -1,6 +1,7 @@
 // Command aihub-nodectl is the privileged helper that lets the AIHub backend
 // manage OpenFlux exit channels without root of its own. It only allows
-// apply, remove, list and status of /opt/openflux-node/node-install.sh.
+// apply, remove, list and status of OpenFlux's node-install.sh (the pinned
+// copy install.sh puts in /usr/local/lib/aihub).
 //
 //	aihub-nodectl apply              config (key=value lines) on stdin
 //	aihub-nodectl remove CHANNEL

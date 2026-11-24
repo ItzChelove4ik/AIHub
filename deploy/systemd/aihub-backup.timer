@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AIHub database backup
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -877,5 +878,20 @@ func (s *DB) ReleaseCarrier(ctx context.Context, carrierID int64) error {
 
 func (s *DB) ReleaseChannelCarriers(ctx context.Context, channelID int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE carriers SET status = 'free', channel_id = NULL WHERE channel_id = ? AND status = 'assigned'`, channelID)
+	return err
+}
+
+// Backup writes a consistent copy of the database at src to dest with
+// VACUUM INTO, which is safe while the server is writing.
+func Backup(ctx context.Context, src, dest string) error {
+	if _, err := os.Stat(dest); err == nil {
+		return fmt.Errorf("%s already exists", dest)
+	}
+	db, err := sql.Open("sqlite", "file:"+src+"?_pragma=busy_timeout(10000)&mode=ro")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	_, err = db.ExecContext(ctx, `VACUUM INTO ?`, dest)
 	return err
 }
